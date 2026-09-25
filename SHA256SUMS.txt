@@ -1,0 +1,1 @@
+8a5bb7920d9434e9bf5a28460aa397399b746a0f863f4dc5c91bb9f9a696fc72  deepseek-harness-0.1.7-rc.1-win-x64-unsigned.exe
