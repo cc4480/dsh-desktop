@@ -56,6 +56,12 @@ installation directory, so reinstalling or upgrading keeps them.
 - Bundled LibreOffice engine and the `office-docx`, `office-pptx`, and `office-xlsx` skills,
   registered by default.
 
+## Adding tools to an install
+
+Skills and plugins are two different mechanisms and are not interchangeable — see
+[INTEGRATIONS.md](INTEGRATIONS.md) for how to add either to an existing install, and why baking
+one into the installer means changing the upstream build stage rather than this repository.
+
 ## Build provenance
 
 | Field | Value |
