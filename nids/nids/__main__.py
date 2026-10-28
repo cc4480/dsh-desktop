@@ -9,6 +9,8 @@
   python -m nids pcap INCIDENT --pcap FILE   cut an incident's packets out of a capture
   python -m nids add-user NAME --role ROLE   dashboard login (analyst | approver)
   python -m nids study-report                results of the blinded raw / template / LLM study
+  python -m nids replay LOGDIR --out LIVEDIR stream a capture into LIVEDIR in real time (live demo feed)
+  python -m nids docs                        regenerate diagrams + ATT&CK coverage table in docs/
 """
 from __future__ import annotations
 
@@ -18,7 +20,7 @@ import json
 import sys
 from pathlib import Path
 
-from nids import anomaly, auth, evaluate, forensics, pipeline, rules, study
+from nids import anomaly, auth, docs, evaluate, forensics, pipeline, rules, study
 from nids.assets import AssetRegistry
 from nids.explain import llm
 from nids.lab import generate
@@ -146,6 +148,16 @@ def main(argv: list[str] | None = None) -> int:
     sr = sub.add_parser("study-report", help="summarise the blinded analyst study")
     sr.add_argument("--db", type=Path, default=d.db_path)
 
+    rp = sub.add_parser("replay", help="stream a recorded Zeek log dir into LIVEDIR in real time")
+    rp.add_argument("logdir", type=Path)
+    rp.add_argument("--out", type=Path, default=pipeline.ROOT / "data" / "live")
+    rp.add_argument("--speed", type=float, default=10.0, help="times real time (default 10)")
+    rp.add_argument("--align", choices=["day", "now", "none"], default="day",
+                    help="day: shift to today keeping the time of day (default); now: to the wall clock")
+
+    dc = sub.add_parser("docs", help="write architecture diagrams and the ATT&CK coverage table")
+    dc.add_argument("--out", type=Path, default=pipeline.ROOT / "docs")
+
     a = ap.parse_args(argv)
     if a.cmd == "lab":
         generate.main(["--out", str(a.out)])
@@ -202,6 +214,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{a.name} ({a.role}) -> {a.users}")
     elif a.cmd == "llm-check":
         return llm_check(a)
+    elif a.cmd == "replay":
+        from nids import replay
+
+        replay.replay(a.logdir, a.out, speed=a.speed, align=a.align)
+    elif a.cmd == "docs":
+        for p in docs.write(a.out):
+            print(p)
     elif a.cmd == "study-report":
         print(study.to_markdown(study.report(Store(a.db).study_responses())))
     return 0

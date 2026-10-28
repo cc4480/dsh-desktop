@@ -1,0 +1,22 @@
+digraph dataflow {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=11, nodesep=0.35, ranksep=0.5, bgcolor="transparent"];
+  node  [shape=box, style="rounded,filled", fillcolor="#f4f6f8", color="#8a94a0", fontname="Helvetica", fontsize=10];
+  edge  [color="#5b6570", fontname="Helvetica", fontsize=9];
+
+  pcap  [label="Network traffic\n(mirror / TAP)", shape=ellipse];
+  logs  [label="Zeek logs\n(rotating)"];
+  watch [label="nids watch\nrotation-safe tail, 10 s passes"];
+  inc   [label="Incident\n(local, full evidence)"];
+  red   [label="Redacted prompt\n10.x -> HOST_1, db-prod-01 -> ASSET_1"];
+  ds    [label="api.deepseek.com", shape=ellipse, fillcolor="#fdecea", color="#c0392b"];
+  egr   [label="egress_log\nexact payload sent", shape=cylinder];
+  nar   [label="Validated narrative\naliases restored locally"];
+  db    [label="SQLite", shape=cylinder];
+  ui    [label="Dashboard"];
+  fw    [label="Firewall command\n(printed for a human)", shape=note];
+  pcap -> logs -> watch -> inc -> red;
+  red -> ds [label="HTTPS, only when backend=deepseek", color="#c0392b", fontcolor="#c0392b"];
+  red -> egr [label="recorded first"];
+  ds -> nar -> db -> ui -> fw [label="approver"];
+  inc -> db [label="always (template if no LLM)"];
+}

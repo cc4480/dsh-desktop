@@ -1,4 +1,9 @@
-"""Plane 7 UI. Reads the incident store only; never runs capture or detection itself.
+"""Plane 7 UI: incident triage, plus the controls that make the system run live.
+
+Triage reads the incident store. The System tab (approver role) starts fixed
+`python -m nids ...` jobs in the background (the replayed demo feed, watch mode,
+training, evaluation, the DeepSeek check); the dashboard never runs detection in-process
+and never executes a firewall command.
 
     python -m nids add-user alice --role approver      # per-user logins (recommended)
     streamlit run dashboard/app.py                     # binds 127.0.0.1 (.streamlit/config.toml)
@@ -23,7 +28,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from nids import auth, forensics, study  # noqa: E402
+from nids import auth, docs, forensics, jobs, study  # noqa: E402
 from nids.anomaly import PSI_DRIFT, PSI_MODERATE  # noqa: E402
 from nids.rules import load_rules  # noqa: E402
 from nids.storage import Store  # noqa: E402
@@ -32,6 +37,9 @@ DB = Path(os.environ.get("NIDS_DB", ROOT / "data" / "nids.db"))
 EVAL_DIR = Path(os.environ.get("NIDS_EVAL_DIR", ROOT / "data" / "eval"))
 USERS = Path(os.environ.get("NIDS_USERS", auth.USERS_PATH))
 RUNBOOKS = ROOT / "runbooks"
+LIVE_DIR = ROOT / "data" / "live"
+JOB_LABELS = {"feed": "Demo feed (replay)", "watch": "Watch mode", "lab": "Generate lab logs", "train": "Train",
+              "run": "Batch run", "evaluate": "Evaluate", "docs": "Regenerate docs", "llm-check": "DeepSeek check"}
 SEV_COLOUR = {"critical": "#c62828", "high": "#ef6c00", "medium": "#f9a825", "low": "#1e88e5",
               "informational": "#78909c"}
 SEV_RANK = {s: i for i, s in enumerate(["critical", "high", "medium", "low", "informational"])}
@@ -106,6 +114,15 @@ def banner() -> None:
     stats = run["stats"]
     rows = store.incidents()
     active = [r for r in rows if r["status"] != "closed"]
+    ids = {r["incident"]["incident_id"] for r in rows}
+    seen = st.session_state.get("seen_incidents")
+    if seen is not None:
+        for r in rows:
+            i = r["incident"]
+            if i["incident_id"] not in seen and r["status"] != "closed":
+                st.toast(f"**{i['severity'].upper()}** {i['attack_type']} · {i['src_ip']} → {i.get('dst_ip') or '*'}",
+                         icon="🚨" if i["severity"] in ("critical", "high") else "🔔")
+    st.session_state["seen_incidents"] = ids
     c = st.columns(7)
     c[0].metric("Mean pps", f"{stats.get('mean_pps', 0):,.0f}")
     c[1].metric("Flows", f"{run['flows']:,}")
@@ -150,6 +167,8 @@ def banner() -> None:
                                 legend=alt.Legend(orient="top", title=None)))
         st.altair_chart(chart.properties(height=150), width="stretch")
     live = (f"**LIVE** · pass {stats['passes']} · log time {ts(stats['log_time'])} · " if stats.get("live") else "")
+    if jobs.status("feed")["running"]:
+        live = "🟢 demo feed running · " + live
     st.caption(f"{live}Last update {ts(run['started_at'])} on `{Path(run['source']).parent.name}` · "
                f"engines {stats.get('engines', {})} · vertical lines = incident detection time")
 
@@ -302,11 +321,12 @@ def incidents_tab() -> None:
     sev = c1.multiselect("Severity", list(SEV_COLOUR), default=[s for s in SEV_COLOUR if s != "informational"])
     statuses = c2.multiselect("Status", list(STATUS_ICON), default=["open", "acknowledged"])
     types = sorted({r["incident"]["attack_type"] for r in rows})
-    kind = c3.multiselect("Attack type", types, default=types)
+    # An exclusion list, so attack types first seen during a live run are shown by default.
+    hidden = c3.multiselect("Hide attack types", types)
     q = c4.text_input("Search IP / asset / incident / campaign id")
     shown = [
         r for r in rows
-        if r["incident"]["severity"] in sev and r["status"] in statuses and r["incident"]["attack_type"] in kind
+        if r["incident"]["severity"] in sev and r["status"] in statuses and r["incident"]["attack_type"] not in hidden
         and (not q or q in " ".join(str(v) for v in (
             r["incident"]["incident_id"], r["incident"]["src_ip"], r["incident"].get("dst_ip"),
             r["incident"].get("asset_name"), r["incident"].get("campaign_id"))))
@@ -568,13 +588,181 @@ def audit_tab() -> None:
     st.download_button("Download audit log (CSV)", df.to_csv(index=False), "nids-audit.csv", "text/csv")
 
 
+# --------------------------------------------------------------------------- system (live controls)
+JOBS_DIR_NAME = jobs.JOBS_DIR.name
+
+
+def captures() -> list[Path]:
+    """Recorded Zeek log directories under data/ (anything with a conn.log), except the live one."""
+    found = {p.parent for p in (ROOT / "data").glob("**/conn.log")}
+    return sorted(d for d in found if d != LIVE_DIR and JOBS_DIR_NAME not in d.parts)
+
+
+def rel(p: Path) -> str:
+    try:
+        return str(p.relative_to(ROOT))
+    except ValueError:
+        return str(p)
+
+
+def archive_store() -> Path | None:
+    """Move the incident store aside so a demo starts clean; nothing is deleted."""
+    global store
+    if not DB.exists():
+        return None
+    store.close()
+    dest = DB.with_name(f"{DB.stem}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}{DB.suffix}")
+    DB.rename(dest)
+    store = Store(DB)
+    st.session_state.pop("seen_incidents", None)
+    return dest
+
+
+def start_job(name: str, args: list[str]) -> None:
+    st_ = jobs.start(name, args, env={"NIDS_DB": str(DB)})
+    st.toast(f"{JOB_LABELS.get(name, name)}: started (pid {st_['pid']})")
+
+
+@st.fragment(run_every=2)
+def job_panel() -> None:
+    known = [n for n in JOB_LABELS if jobs.status(n)["pid"]]
+    if not known:
+        st.caption("No jobs started yet.")
+        return
+    for name in known:
+        j = jobs.status(name)
+        state = "🟢 running" if j["running"] else "⚪ finished"
+        with st.expander(f"{JOB_LABELS[name]} · {state} · started {ts(j['started_at'])}",
+                         expanded=j["running"] or name == "llm-check"):
+            st.caption("`python -m nids " + " ".join(j["args"]) + "`")
+            st.code(jobs.output(name, lines=40) or "(no output yet)", language="text")
+
+
+def system_tab() -> None:
+    can_run = auth.can(role, "operate")
+    if not can_run:
+        st.info("Starting and stopping jobs needs the approver role. You can follow their output below.")
+    key_set = bool(os.environ.get("DEEPSEEK_API_KEY"))
+    backends = ["deepseek", "none"] if key_set else ["none"]
+
+    st.subheader("Live demo feed")
+    st.caption("Replays a recorded capture into `data/live/` at the chosen speed, exactly as a running Zeek "
+               "appends to its logs, while watch mode detects on it. Incidents appear on the Incidents tab as "
+               "they are detected, and close when their activity stops.")
+    feed, watcher = jobs.status("feed"), jobs.status("watch")
+    caps = captures()
+    if not caps:
+        st.warning("No recorded captures under data/. Generate the synthetic lab logs below first.")
+    c = st.columns([3, 2, 2])
+    default = next((i for i, p in enumerate(caps) if p.name == "demo"), 0)
+    src = c[0].selectbox("Capture", caps, index=default, format_func=rel, disabled=not caps)
+    speed = c[1].select_slider("Speed", [1, 5, 10, 30, 60], value=10, help="Times real time.")
+    backend = c[2].selectbox("Narratives", backends, help="deepseek needs DEEPSEEK_API_KEY in the dashboard's "
+                             "environment; none uses the deterministic templates.")
+    model = os.environ.get("DEEPSEEK_MODEL", "")
+    if backend == "deepseek":
+        model = st.text_input("DeepSeek model", value=model, help="Default: DEEPSEEK_MODEL.")
+    fresh = st.checkbox("Start with an empty incident store (the current one is archived, not deleted)", value=True)
+    b = st.columns([1, 1, 4])
+    running = feed["running"] or watcher["running"]
+    if b[0].button("▶ Start live demo", type="primary", disabled=not can_run or running or not caps
+                   or (backend == "deepseek" and not model)):
+        if fresh:
+            dest = archive_store()
+            if dest:
+                st.toast(f"Previous store archived as {dest.name}")
+        start_job("watch", ["watch", str(LIVE_DIR), "--interval", "3", "--db", str(DB), "--backend", backend,
+                            *(["--model", model] if backend == "deepseek" else [])])
+        start_job("feed", ["replay", str(src), "--out", str(LIVE_DIR), "--speed", str(speed)])
+        st.rerun()
+    if b[1].button("■ Stop", disabled=not can_run or not running):
+        for n in ("feed", "watch"):
+            jobs.stop(n)
+        st.rerun()
+    if feed["running"]:
+        st.success(f"Feed running: `{rel(Path(feed['args'][1]))}` at {feed['args'][-1]}x")
+    elif watcher["running"]:
+        st.info("Feed finished; watch mode is still running and will close incidents as their windows pass. "
+                "Stop it when you are done.")
+
+    st.subheader("Pipeline")
+    c = st.columns(5)
+    actions = {
+        "lab": (c[0], "Generate lab logs", ["lab"]),
+        "train": (c[1], "Train on baseline", ["train", str(ROOT / "data" / "lab" / "baseline")]),
+        "run": (c[2], "Batch run capture", ["run", str(src), "--db", str(DB), "--backend", backend,
+                                            *(["--model", model] if backend == "deepseek" else [])]),
+        "evaluate": (c[3], "Evaluate capture", ["evaluate", str(src), "--out", str(EVAL_DIR)]),
+        "docs": (c[4], "Regenerate docs", ["docs"]),
+    }
+    for name, (col, label, args) in actions.items():
+        busy = jobs.status(name)["running"]
+        if col.button(label, key=f"job-{name}", disabled=not can_run or busy or (name in ("run", "evaluate") and not caps),
+                      width="stretch"):
+            start_job(name, args)
+            st.rerun()
+    st.caption(f"Capture for batch run / evaluate: `{rel(src) if caps else '-'}` (chosen above). Models: " +
+               ", ".join(f"{n} {'✅' if (ROOT / 'models' / f).exists() else '—'}" for n, f in
+                         (("anomaly", "anomaly.joblib"), ("profile", "profile.json"), ("supervised", "supervised.joblib"))))
+
+    st.subheader("DeepSeek")
+    if key_set:
+        st.caption("DEEPSEEK_API_KEY is set in the dashboard's environment (its value is never shown or stored).")
+    else:
+        st.warning("DEEPSEEK_API_KEY is not set where the dashboard runs, so narratives use the templates. Set it "
+                   "as an environment variable (never in a file in this repository) and restart the dashboard.")
+    c = st.columns([3, 1])
+    test_model = c[0].text_input("Model to test", value=os.environ.get("DEEPSEEK_MODEL", ""), key="llm-model",
+                                 help="Leave empty to list the models available to the key.")
+    if c[1].button("Test connection", disabled=not can_run or not key_set or jobs.status("llm-check")["running"],
+                   width="stretch"):
+        start_job("llm-check", ["llm-check", *(["--model", test_model] if test_model else [])])
+        st.rerun()
+    st.caption("Sends one synthetic incident (documentation addresses only), checks the narrative passes the "
+               "validator, and confirms the internal address and asset name were redacted before leaving the host.")
+
+    st.subheader("Jobs")
+    job_panel()
+
+
+# --------------------------------------------------------------------------- architecture
+def architecture_tab() -> None:
+    st.caption("Generated from the running code and config (nids/docs.py); `python -m nids docs` writes the same "
+               "diagrams and table to docs/.")
+    st.subheader("Architecture")
+    st.graphviz_chart(docs.ARCHITECTURE, width="stretch")
+    c = st.columns(2)
+    with c[0]:
+        st.subheader("LLM trust boundary")
+        st.graphviz_chart(docs.TRUST_BOUNDARY, width="stretch")
+    with c[1]:
+        st.subheader("Data flow, including DeepSeek egress")
+        st.graphviz_chart(docs.DATA_FLOW, width="stretch")
+    st.subheader("ATT&CK coverage")
+    rows = docs.attack_table()
+    st.dataframe(pd.DataFrame(rows).rename(columns={"window_s": "window (s)"}), hide_index=True, width="stretch",
+                 column_config={"runbook": st.column_config.CheckboxColumn("runbook")})
+    tactics = sorted({r["tactic"] for r in rows if r["tactic"]})
+    st.caption(f"{len({r['attack_id'] for r in rows if r['attack_id']})} techniques across {len(tactics)} tactics. "
+               "ATT&CK ids come from config/rules.yaml; the LLM may not assign or change one.")
+    st.subheader("What left the host")
+    sent = store.egress(20)
+    if not sent:
+        st.caption("Nothing has been sent to a cloud LLM from this store.")
+    for e in sent:
+        with st.expander(f"{ts(e['sent_at'])} · {e['backend']} · {e['incident_id']} · {len(e['payload']):,} bytes"):
+            st.code(e["payload"], language="text")
+
+
 st.title("NIDS — Incident Triage")
 shared_note = " · ⚠ shared password: no per-person accountability" if st.session_state.get("shared") else ""
 st.caption(f"Signed in as {viewer} ({role}){shared_note}. The LLM explains. It never decides, and it never executes.")
 banner()
-tabs = st.tabs(["Incidents", "Model health", "Evaluation", "Study", "Audit"])
+tabs = st.tabs(["Incidents", "Model health", "Evaluation", "Study", "Audit", "System", "Architecture"])
 with tabs[0]:
-    incidents_tab()
+    auto = st.toggle("Auto-refresh every 5 s", value=jobs.status("watch")["running"],
+                     help="On while watch mode runs. Turn it off while writing an approval note.")
+    st.fragment(run_every=5 if auto else None)(incidents_tab)()
 with tabs[1]:
     model_tab()
 with tabs[2]:
@@ -583,3 +771,7 @@ with tabs[3]:
     study_tab()
 with tabs[4]:
     audit_tab()
+with tabs[5]:
+    system_tab()
+with tabs[6]:
+    architecture_tab()

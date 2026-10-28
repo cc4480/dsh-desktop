@@ -1,0 +1,21 @@
+digraph trust {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=11, nodesep=0.35, ranksep=0.5, bgcolor="transparent"];
+  node  [shape=box, style="rounded,filled", fillcolor="#f4f6f8", color="#8a94a0", fontname="Helvetica", fontsize=10];
+  edge  [color="#5b6570", fontname="Helvetica", fontsize=9];
+
+  subgraph cluster_trusted {
+    label="Trusted: decided by code and config"; style="rounded"; color="#2e7d32"; fontcolor="#2e7d32";
+    cls   [label="Classification\nattack type, ATT&CK id, severity,\nconfidence, allowed intents"];
+    ctx   [label="CONTEXT\nlocal ATT&CK summary + runbook"];
+    owned [label="Owned fields in the final narrative\nattack id, severity, intent, command"];
+  }
+  subgraph cluster_untrusted {
+    label="Untrusted: attacker-influenced or model-generated"; style="rounded,dashed"; color="#c0392b"; fontcolor="#c0392b";
+    ev    [label="EVIDENCE\nfeature values, hostnames, DNS names\n(may carry injected text)"];
+    out   [label="LLM output\nsummary, technical_evidence"];
+  }
+  check [label="Validator\ncited field must exist AND match value\nno new CVEs, no commands\nintent must be in allowed list", fillcolor="#fff8e1"];
+  cls -> check; ctx -> out [label="prompt"]; ev -> out [label="prompt (data only)"];
+  out -> check;
+  check -> owned [label="overwrite"];
+}

@@ -1,0 +1,45 @@
+digraph architecture {
+  graph [rankdir=LR, fontname="Helvetica", fontsize=11, nodesep=0.35, ranksep=0.5, bgcolor="transparent"];
+  node  [shape=box, style="rounded,filled", fillcolor="#f4f6f8", color="#8a94a0", fontname="Helvetica", fontsize=10];
+  edge  [color="#5b6570", fontname="Helvetica", fontsize=9];
+
+  subgraph cluster_sensor {
+    label="Plane 1  Sensing (edge)"; style="rounded"; color="#8a94a0";
+    zeek  [label="Zeek 9 + JA4\nconn dns http ssl notice weird"];
+    sanit [label="Edge sanitisation\nUA -> enum, URI -> len + hash\nCommunity ID v1"];
+    zeek -> sanit;
+  }
+  subgraph cluster_detect {
+    label="Planes 2-3  Features and detection (deterministic)"; style="rounded"; color="#8a94a0";
+    feat  [label="Feature registry v2\nhopping windows"];
+    prof  [label="Behavioural profile\nknown dsts, hourly bytes, JA4 set"];
+    rules [label="Rule engine\nYAML (feature, op, value), no eval"];
+    anom  [label="Anomaly engine\nIsolation Forest + autoencoder\nper-hour ECDF calibration"];
+    sup   [label="Supervised model\nCIC-IDS2017, Zeek adapter\nisotonic calibration"];
+    feat -> rules; prof -> rules; feat -> anom; feat -> sup;
+  }
+  subgraph cluster_correlate {
+    label="Plane 4  Correlation and policy (deterministic)"; style="rounded"; color="#8a94a0";
+    corr  [label="Correlator\nincidents by (src, dst, attack)\ncampaigns, severity table"];
+    pol   [label="Policy engine\niptables / nftables + rollback\nguards, never executes"];
+    corr -> pol;
+  }
+  subgraph cluster_explain {
+    label="Plane 5  Explanation (untrusted output)"; style="rounded,dashed"; color="#c0392b"; fontcolor="#c0392b";
+    prompt [label="Prompt builder\nCONTEXT / CLASSIFICATION / EVIDENCE"];
+    redact [label="Redactor\ninternal IPs + asset names aliased"];
+    llm    [label="DeepSeek API\n(cloud, json_object)", fillcolor="#fdecea", color="#c0392b"];
+    valid  [label="Validator\ncitations, CVEs, commands\noverrides owned fields"];
+    tmpl   [label="Template fallback"];
+    prompt -> redact -> llm -> valid;
+    valid -> tmpl [label="reject", style=dashed];
+  }
+  store [label="SQLite store\nincidents, approvals, egress_log, cache", shape=cylinder];
+  ui    [label="Dashboard\nanalyst / approver"];
+  sanit -> feat; sanit -> prof;
+  rules -> corr; anom -> corr; sup -> corr;
+  corr -> prompt;
+  valid -> store; tmpl -> store; pol -> store;
+  store -> ui;
+  ui -> pol [label="approve (human)", style=dashed];
+}

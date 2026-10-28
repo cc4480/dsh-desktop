@@ -222,6 +222,10 @@ class Store:
                         (incident_id, backend, payload, time.time()))
         self.db.commit()
 
+    def egress(self, limit: int = 20) -> list[dict]:
+        rows = self.db.execute("SELECT * FROM egress_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [dict(r) for r in rows]
+
     def cache_get(self, fp: str, max_age: float = CACHE_TTL) -> dict | None:
         row = self.db.execute("SELECT body FROM llm_cache WHERE fingerprint=? AND created_at >= ?",
                               (fp, time.time() - max_age)).fetchone()

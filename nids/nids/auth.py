@@ -71,5 +71,5 @@ def authenticate(name: str, password: str, path: Path = USERS_PATH) -> str | Non
 
 
 def can(role: str | None, action: str) -> bool:
-    need = {"approve": "approver"}.get(action, "analyst")
+    need = {"approve": "approver", "operate": "approver"}.get(action, "analyst")
     return role is not None and ROLES.get(role, 0) >= ROLES[need]
