@@ -1,0 +1,10 @@
+# No usage telemetry leaves the host, and never listen on 0.0.0.0 by default.
+[browser]
+gatherUsageStats = false
+
+[server]
+address = "127.0.0.1"
+headless = true
+
+[client]
+toolbarMode = "minimal"

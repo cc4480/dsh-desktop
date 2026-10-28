@@ -1,0 +1,4 @@
+-r requirements.txt
+pytest==9.2.0
+# M2 (optional): falls back to sklearn HistGradientBoosting if absent
+# xgboost

@@ -1,0 +1,92 @@
+# Plane 3a: deterministic rule signatures.
+#
+# Conditions are structured (feature, op, value) triples, never evaluated as code.
+# Every feature must exist in nids/features.py FEATURE_REGISTRY; the loader rejects
+# unknown names. ATT&CK IDs live here so the mapping is auditable and the LLM never
+# has to (and is not allowed to) infer one.
+#
+#   source            conn | dns
+#   group_by          record fields that form the window key
+#   window            tumbling window length, seconds
+#   correlation_window  how long an incident stays open without new alerts, seconds
+#   default_intent    remediation intent used by the template fallback
+#   allowed_intents   intents the LLM may pick for this attack type
+
+- id: SYN_FLOOD
+  source: conn
+  group_by: [src_ip, dst_ip]
+  window: 10
+  correlation_window: 30
+  when:
+    - {feature: syn_ratio, op: ">", value: 0.90}
+    - {feature: packets_per_second, op: ">", value: 5000}
+    - {feature: s0_ratio, op: ">", value: 0.90}
+  confidence: 0.95
+  attack_type: "Network Denial of Service: Direct Network Flood"
+  attack_id: T1498.001
+  default_intent: block_source_ip
+  allowed_intents: [block_source_ip, rate_limit_destination_port, enable_verbose_logging, no_action]
+
+- id: HORIZONTAL_PORT_SCAN
+  # Blueprint name kept; with group_by [src_ip, dst_ip] this is a vertical scan of one
+  # host. VERTICAL vs HORIZONTAL differ only in group_by: add a second rule grouped by
+  # [src_ip] with distinct_dst_ips for a sweep across hosts.
+  source: conn
+  group_by: [src_ip, dst_ip]
+  window: 60
+  correlation_window: 300
+  when:
+    - {feature: distinct_dst_ports, op: ">", value: 20}
+    - {feature: syn_ratio, op: ">", value: 0.80}
+    - {feature: failed_conn_ratio, op: ">", value: 0.80}
+  confidence: 0.90
+  attack_type: "Network Service Discovery"
+  attack_id: T1046
+  default_intent: block_source_ip
+  allowed_intents: [block_source_ip, enable_verbose_logging, isolate_host, no_action]
+
+- id: HOST_SWEEP
+  source: conn
+  group_by: [src_ip, dst_port]
+  window: 60
+  correlation_window: 300
+  when:
+    - {feature: distinct_dst_ips, op: ">", value: 20}
+    - {feature: failed_conn_ratio, op: ">", value: 0.80}
+  confidence: 0.85
+  attack_type: "Remote System Discovery"
+  attack_id: T1018
+  default_intent: enable_verbose_logging
+  allowed_intents: [block_source_ip, enable_verbose_logging, isolate_host, no_action]
+
+- id: DNS_TUNNELING
+  source: dns
+  group_by: [src_ip]
+  window: 300
+  correlation_window: 600
+  when:
+    - {feature: query_count, op: ">=", value: 30}
+    - {feature: mean_label_length, op: ">", value: 30}
+    - {feature: unique_subdomain_ratio, op: ">", value: 0.80}
+  confidence: 0.80
+  attack_type: "Exfiltration Over Alternative Protocol"
+  attack_id: T1048
+  default_intent: isolate_host
+  allowed_intents: [isolate_host, enable_verbose_logging, review_account_activity, no_action]
+
+- id: BEACONING
+  source: conn
+  group_by: [src_ip, dst_ip, dst_port]
+  window: 900
+  correlation_window: 1800
+  when:
+    - {feature: flow_count, op: ">=", value: 8}
+    - {feature: iat_cv, op: "<", value: 0.10}
+    - {feature: active_duration, op: ">", value: 300}
+    - {feature: iat_mean, op: ">=", value: 30}
+    - {feature: iat_mean, op: "<=", value: 3600}
+  confidence: 0.70
+  attack_type: "Application Layer Protocol: C2 Beaconing"
+  attack_id: T1071
+  default_intent: isolate_host
+  allowed_intents: [isolate_host, enable_verbose_logging, review_account_activity, no_action]

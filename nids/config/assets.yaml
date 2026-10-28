@@ -1,0 +1,60 @@
+# Plane 0: asset registry. First-class input to severity and to the response engine.
+# criticality: 1 (lab toy) .. 5 (crown jewel)
+
+internal_networks:
+  - 192.168.0.0/16
+  - 10.0.0.0/8
+  - 172.16.0.0/12
+
+# Sources that are expected to scan (vulnerability scanners, monitoring). Incidents
+# from these drop to Informational.
+known_scanners:
+  - 192.168.1.250
+
+# No generated command may target these: the sensor itself, the gateway, admin hosts.
+protected_ips:
+  - 192.168.1.1      # gateway
+  - 192.168.1.2      # NIDS sensor / monitoring host
+  - 192.168.1.5      # admin jump host
+
+# Rate limiting these ports needs a change ticket, so the policy engine refuses.
+critical_service_ports: [22, 53, 443]
+
+default_criticality: 2
+
+assets:
+  - ip: 192.168.1.10
+    name: web-prod-01
+    service: http
+    owner: platform-team
+    criticality: 4
+    internet_facing: true
+    environment: production
+  - ip: 192.168.1.20
+    name: db-prod-01
+    service: postgres
+    owner: data-team
+    criticality: 5
+    internet_facing: false
+    environment: production
+  - ip: 192.168.1.30
+    name: build-runner-03
+    service: ci
+    owner: platform-team
+    criticality: 2
+    internet_facing: false
+    environment: internal
+  - ip: 192.168.1.50
+    name: hr-laptop-12
+    service: workstation
+    owner: hr
+    criticality: 3
+    internet_facing: false
+    environment: corporate
+  - ip: 192.168.1.60
+    name: dev-laptop-07
+    service: workstation
+    owner: engineering
+    criticality: 2
+    internet_facing: false
+    environment: corporate
