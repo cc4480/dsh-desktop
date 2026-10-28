@@ -53,3 +53,44 @@ def test_temporal_split_never_trains_on_test_day():
     assert report["test"]["support_attack"] == int(df[df["__day"] == "friday"]["__y"].sum())
     assert "PortScan" in report["test_per_class"]
     assert set(cols) == set(ts.feature_columns(df, deployable=True))
+
+
+def _corrected_csv(tmp_path):
+    """Headers and labels in the corrected release's style (Engelen et al. 2021)."""
+    rng = np.random.default_rng(1)
+    for day in ts.DAYS:
+        rows = []
+        for i in range(60):
+            attack = day != "monday" and i % 4 == 0
+            rows.append({
+                "id": i, "Flow ID": f"f{i}", "Src IP": "10.0.0.1", "Dst Port": 80, "Timestamp": "x",
+                "Flow Duration": float(rng.exponential(1000)), "Total Fwd Packet": int(rng.integers(1, 9)),
+                "Total Bwd packets": int(rng.integers(0, 9)), "Flow Packets/s": float(rng.random()),
+                "Fwd Packets/s": float(rng.random()), "Bwd Packets/s": float(rng.random()),
+                "Down/Up Ratio": float(rng.random()), "FIN Flag Count": 0, "SYN Flag Count": 1,
+                "RST Flag Count": 0, "ACK Flag Count": 1,
+                "label": ("DoS Hulk - Attempted" if i % 8 == 0 else "DoS Hulk") if attack else "BENIGN",
+            })
+        pd.DataFrame(rows).to_csv(tmp_path / f"{day}.csv", index=False)
+    return tmp_path
+
+
+def test_corrected_release_headers_normalise(tmp_path):
+    df, info = ts.load(_corrected_csv(tmp_path))
+    assert info["zeek_features_missing"] == []
+    assert {"Total Fwd Packets", "Total Backward Packets", "Source IP", "Destination Port", "Label"} <= set(df.columns)
+    cols = ts.feature_columns(df, deployable=False)
+    assert "id" not in cols and "Destination Port" not in cols
+    assert ts.feature_columns(df, deployable=True, zeek=True) == list(ts.ZEEK_CIC_FEATURES)
+
+
+def test_attempted_policies(tmp_path):
+    d = _corrected_csv(tmp_path)
+    dropped, info = ts.load(d, "drop")
+    assert info["attempted_rows"] > 0 and info["variant"].startswith("corrected")
+    assert not dropped["Label"].str.contains("Attempted").any()
+    benign, _ = ts.load(d, "benign")
+    attack, _ = ts.load(d, "attack")
+    assert len(benign) == len(attack) == len(dropped) + info["attempted_rows"]
+    assert benign["__y"].sum() == dropped["__y"].sum()
+    assert attack["__y"].sum() == dropped["__y"].sum() + info["attempted_rows"]

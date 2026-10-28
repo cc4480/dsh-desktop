@@ -2,6 +2,11 @@
 
     python ml/train_supervised.py --data /path/to/MachineLearningCVE --out models/
 
+Works with the original CIC release and with the corrected, relabelled release (Engelen
+et al. 2021, Liu et al. 2022), which is recommended: column names are matched in a
+normalised form ("Total Fwd Packet" == "Total Fwd Packets" == "Total Forward Packets"),
+and labels ending in "Attempted" (attacks that did not succeed) follow --attempted.
+
 Protocol, in order:
   1. load the per-day CSVs and tag each row with its day (from the file name)
   2. drop exact duplicate rows BEFORE splitting
@@ -40,27 +45,71 @@ from nids.supervised import ZEEK_CIC_FEATURES  # noqa: E402
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"]
 SPLIT = {"train": ["monday", "tuesday", "wednesday"], "val": ["thursday"], "test": ["friday"]}
 ID_COLUMNS = {"flow id", "source ip", "src ip", "destination ip", "dst ip", "source port", "src port",
-              "destination port", "dst port", "timestamp", "protocol"}
+              "destination port", "dst port", "timestamp", "protocol", "id"}
+_SYNONYMS = {"backward": "bwd", "forward": "fwd", "packets": "packet", "pkts": "packet", "pkt": "packet",
+             "source": "src", "destination": "dst", "bytes": "byte", "flags": "flag", "count": "cnt"}
+
+
+def canonical(name: str) -> str:
+    """Spelling-insensitive column key, so both CIC releases map onto the same names."""
+    tokens = re.findall(r"[a-z0-9]+", name.lower())
+    return "_".join(_SYNONYMS.get(t, t) for t in tokens)
+
+
+# Canonical key -> the original release's spelling, which the rest of the code uses.
+CANONICAL_NAMES = {canonical(c): c for c in [*ZEEK_CIC_FEATURES, "Label", "Flow ID", "Source IP", "Source Port",
+                                               "Destination IP", "Destination Port", "Timestamp", "Protocol"]}
+
+
+def normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df.columns = [CANONICAL_NAMES.get(canonical(c), c.strip()) for c in df.columns]
+    return df
+
+
+def apply_attempted(df: pd.DataFrame, policy: str) -> tuple[pd.DataFrame, int]:
+    """Corrected release: "X - Attempted" marks attacks that did not succeed.
+
+    drop    (default) exclude them: neither a clean attack nor benign traffic
+    benign  count them as benign (nothing malicious happened on the wire)
+    attack  count them as attacks (the intent was malicious)
+    """
+    attempted = df["Label"].astype(str).str.contains("attempted", case=False)
+    n = int(attempted.sum())
+    if policy == "drop":
+        df = df[~attempted].copy()
+    elif policy == "benign":
+        df.loc[attempted, "Label"] = "BENIGN"
+    elif policy != "attack":
+        raise ValueError(f"unknown --attempted policy {policy!r}")
+    return df, n
+
+
 # Payload-length features: CICFlowMeter counts payload bytes, live sensors count wire bytes.
 BYTE_FEATURE = re.compile(r"length|bytes|segment size|packet size|avg bwd|avg fwd", re.IGNORECASE)
 KEEP_DESPITE_NAME = re.compile(r"init_win_bytes", re.IGNORECASE)  # TCP window: a header field
 
 
-def load(data_dir: Path) -> pd.DataFrame:
+def load(data_dir: Path, attempted: str = "drop") -> tuple[pd.DataFrame, dict]:
     frames = []
     for csv in sorted(data_dir.glob("*.csv")):
         day = next((d for d in DAYS if d in csv.name.lower()), None)
         if day is None:
             continue
-        df = pd.read_csv(csv, low_memory=False, encoding="latin-1")
-        df.columns = [c.strip() for c in df.columns]
+        df = normalise_columns(pd.read_csv(csv, low_memory=False, encoding="latin-1"))
         df["__day"] = day
         frames.append(df)
     if not frames:
         raise SystemExit(f"no CIC-IDS2017 day CSVs found in {data_dir}")
     df = pd.concat(frames, ignore_index=True)
+    if "Label" not in df.columns:
+        raise SystemExit("no Label column found after normalising column names")
+    df, n_attempted = apply_attempted(df, attempted)
     df["__y"] = (df["Label"].astype(str).str.strip().str.upper() != "BENIGN").astype(int)
-    return df
+    missing = [c for c in ZEEK_CIC_FEATURES if c not in df.columns]
+    info = {"variant": "corrected (has Attempted labels)" if n_attempted else "original or unlabelled-attempts",
+            "attempted_rows": n_attempted, "attempted_policy": attempted,
+            "zeek_features_missing": missing}
+    return df, info
 
 
 def dedupe(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
@@ -75,7 +124,8 @@ def feature_columns(df: pd.DataFrame, deployable: bool, zeek: bool = False) -> l
         return [c for c in ZEEK_CIC_FEATURES if c in df.columns]
     cols = []
     for c in df.columns:
-        if c.startswith("__") or c == "Label" or c.lower() in ID_COLUMNS:
+        if c.startswith("__") or c == "Label" or c.lower() in ID_COLUMNS or canonical(c) in {
+                canonical(x) for x in ID_COLUMNS}:
             continue
         if not pd.api.types.is_numeric_dtype(df[c]):
             continue
@@ -157,11 +207,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--data", type=Path, required=True, help="directory of CIC-IDS2017 per-day CSVs")
     ap.add_argument("--out", type=Path, default=Path("models"))
     ap.add_argument("--skip-naive", action="store_true")
+    ap.add_argument("--attempted", choices=["drop", "benign", "attack"], default="drop",
+                    help="corrected release only: how to treat '... - Attempted' labels (default: drop)")
     a = ap.parse_args(argv)
 
-    raw = load(a.data)
+    raw, info = load(a.data, a.attempted)
+    if info["zeek_features_missing"]:
+        print(f"warning: Zeek-compatible features missing: {info['zeek_features_missing']}", file=sys.stderr)
     df, n_dup = dedupe(raw)
     report = {
+        "dataset": info,
         "rows_raw": len(raw),
         "duplicates_dropped": n_dup,
         "duplicate_fraction": round(n_dup / len(raw), 4),
