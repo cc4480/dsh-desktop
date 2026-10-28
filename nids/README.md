@@ -18,7 +18,19 @@ python -m nids run data/lab/demo --fresh   # detect -> correlate -> explain -> r
 python -m nids evaluate data/lab/demo      # each engine and the ensemble, against ground truth
 python -m nids add-user alice --role approver   # dashboard login (analyst | approver)
 streamlit run dashboard/app.py             # http://127.0.0.1:8501
-python -m pytest -q                        # 66 tests, incl. the prompt-injection suite
+python -m nids docs                        # diagrams + ATT&CK coverage table -> docs/
+python -m pytest -q                        # 75 tests, incl. the prompt-injection suite
+```
+
+**Everything live from the UI.** Sign in as an approver, open **System**, pick a capture
+and press **Start live demo**. The capture is replayed into `data/live/` as if a sensor
+were writing it, `watch` detects on it, and incidents appear on the Incidents tab as they
+happen (new ones raise a toast). The same tab trains, runs, evaluates, regenerates the
+docs and tests the DeepSeek connection; job output streams underneath. The CLI form:
+
+```bash
+python -m nids replay data/lab/demo --out data/live --speed 10   # the feed
+python -m nids watch data/live --interval 3                      # the detector
 ```
 
 `NIDS_DASHBOARD_PASSWORD=change-me scripts/demo.sh` runs the whole demo with a shared
@@ -110,10 +122,13 @@ refuses a model trained on anything else.
 **Dataset quality.** The original CIC-IDS2017 release has documented errors. Engelen et
 al. (2021) and Liu et al. (2022) found more than 20% of flows were artefacts, and about
 10% were mislabelled. They regenerated and relabelled the dataset from the original pcaps
-and published the corrected version. Prefer that version. The trainer has only been tested
-against the original CSV layout, so check its column names and labels (the corrected
-version marks failed attacks as "Attempted") before training. Either way, report which
-version you used.
+and published the corrected version. Prefer that version. The trainer reads both layouts:
+column names are matched in a normalised form ("Total Fwd Packet" = "Total Fwd Packets",
+"Src IP" = "Source IP"), the corrected release's `id` column is dropped as an identifier,
+and its "… - Attempted" labels (attacks that did not succeed) follow `--attempted drop`
+(default), `benign` or `attack`. The report records which release it saw, how many
+attempted rows there were and the policy used, and warns if any Zeek-compatible feature
+is missing.
 
 ### Docker lab (M0)
 
@@ -194,6 +209,8 @@ Expect to tune rule thresholds on the first real capture, then freeze them.
 | Forensics | `nids/forensics.py` | `python -m nids pcap INCIDENT --pcap FILE` (tshark with a time bound, else tcpdump with BPF only). |
 | Evaluation | `nids/evaluate.py` | rules / anomaly / supervised / ensemble against ground truth, at incident and flow level, with detection latency. |
 | Study (§6.4) | `nids/study.py`, dashboard **Study** tab | Blinded, timed raw / template / LLM comparison. `python -m nids study-report` prints the results. |
+| Live demo | `nids/replay.py`, `nids/jobs.py` | `replay` streams a recorded log dir at N× speed, shifting timestamps by whole days so per-hour calibration still applies. `jobs` runs fixed `python -m nids` commands in the background (pid and output in `data/jobs/`), never through a shell. |
+| Docs | `nids/docs.py`, `docs/` | Architecture, trust-boundary and data-flow diagrams (Graphviz DOT) and the ATT&CK coverage table, generated from the code and config. |
 
 ### Dashboard
 
@@ -221,6 +238,17 @@ Expect to tune rule thresholds on the first real capture, then freeze them.
 - **Evaluation:** baselines table, per-episode results, per-engine recall heatmap.
 - **Study:** the blinded analyst study (below).
 - **Audit:** every view, decision and status change; downloadable as CSV.
+- **System** (starting jobs needs the **approver** role; analysts can follow the output)
+  - live demo: capture, speed, narratives (DeepSeek or template), start / stop;
+    the current store is archived, not deleted, when starting clean
+  - pipeline: generate lab logs, train, batch run, evaluate, regenerate docs
+  - DeepSeek: whether the key is set (never its value) and a one-click `llm-check`
+  - job output, refreshed every 2 s
+- **Architecture:** the three diagrams, the ATT&CK coverage table, and the last 20
+  payloads sent to the LLM (from `egress_log`), so what left the host is visible.
+
+The Incidents tab auto-refreshes every 5 s while watch mode runs; turn it off while
+writing an approval note.
 
 ### The analyst study (§6.4)
 
