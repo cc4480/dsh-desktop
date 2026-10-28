@@ -18,4 +18,24 @@ sleep 30
 
 s=$(now); nmap -sS -Pn -n -T4 -p 1-1024 "$TARGET" >/dev/null 2>&1; e=$(now)
 gt HORIZONTAL_PORT_SCAN "\"$TARGET\"" "$s" "$e" detect '"T1046"'
+sleep 30
+
+# SSH password guessing: 40 attempts with wrong passwords against a real sshd.
+s=$(now)
+for i in $(seq 1 40); do
+  sshpass -p "guess-$i" ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+      -o ConnectTimeout=3 -o PreferredAuthentications=password -o NumberOfPasswordPrompts=1 \
+      lab@"$TARGET" true >/dev/null 2>&1 || true
+  sleep 1
+done
+gt SSH_BRUTE_FORCE "\"$TARGET\"" "$s" "$(now)" detect '"T1110"'
+sleep 30
+
+# Wordlist scan with a scanner User-Agent (the UA never leaves the sensor reader).
+s=$(now)
+for w in admin backup .git .env wp-admin phpmyadmin config old test api/v1 server-status uploads private db \
+         $(for i in $(seq 1 286); do head -c 6 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo; done); do
+  curl -s -o /dev/null --max-time 2 -A "gobuster/3.6" "http://$TARGET/$w" || true
+done
+gt HTTP_WORDLIST_SCAN "\"$TARGET\"" "$s" "$(now)" detect '"T1595.003"'
 echo "attacker done"

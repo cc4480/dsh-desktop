@@ -3,4 +3,5 @@ __pycache__/
 data/
 models/
 .streamlit/secrets.toml
+config/users.yaml
 *.pcap

@@ -1,11 +1,14 @@
 # M0 lab: isolated network, real TCP/IP stacks, Zeek as the sensor, ground truth written
 # by the attack scripts themselves. Run it through lab/run_lab.sh, not directly.
 #
-#   172.28.0.10   target   nginx :80 (web), :8443 (fake C2), dnsmasq :53, nc sink :9000
+#   172.28.0.10   target   nginx :80 (web), :443 self-signed (fake C2), sshd :22, dnsmasq :53,
+#                          nc sink :9000
 #   172.28.0.100  client   benign web + DNS traffic, always on
-#   172.28.0.66   attacker poisoned UA, SYN flood, port scan          (profile: attack)
+#   172.28.0.66   attacker poisoned UA, SYN flood, port scan, SSH brute force, wordlist scan
+#                                                                       (profile: attack)
 #   172.28.0.60   implant  C2 beacon, DNS tunnel, bulk upload          (profile: attack)
 #   sensor        Zeek inside the target's network namespace, so it sees all target traffic
+#   recorder      tcpdump, headers only (snaplen 128), for `python -m nids pcap`
 name: nids-lab
 
 networks:
@@ -29,6 +32,16 @@ services:
     volumes: ["${LAB_OUT:?set by run_lab.sh}:/out"]
     # SIGTERM (docker compose stop) makes Zeek flush every open connection to conn.log.
     command: ["zeek", "-i", "eth0", "-C", "LogAscii::use_json=T", "local"]
+
+  recorder:
+    build: ./tools
+    network_mode: "service:target"
+    depends_on: [target]
+    cap_add: [NET_RAW, NET_ADMIN]
+    volumes: ["${LAB_OUT}:/out"]
+    # Headers only: enough to pivot from an incident to its packets, without storing
+    # gigabytes of bulk-upload payload.
+    command: ["tcpdump", "-i", "eth0", "-s", "128", "-U", "-w", "/out/capture.pcap"]
 
   client:
     build: ./tools

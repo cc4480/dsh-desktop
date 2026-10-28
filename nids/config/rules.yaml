@@ -93,3 +93,121 @@
   attack_id: T1071
   default_intent: isolate_host
   allowed_intents: [isolate_host, enable_verbose_logging, review_account_activity, no_action]
+
+# ---------------------------------------------------------------- credential attacks
+- id: BRUTE_FORCE
+  # Many short, completed sessions to a login service: password guessing. Completed
+  # handshakes distinguish it from a scan; short sessions with little data from a
+  # legitimate admin who stays logged in.
+  source: conn
+  filter: {dst_port: [21, 22, 23, 3389, 5900]}
+  group_by: [src_ip, dst_ip, dst_port]
+  window: 120
+  correlation_window: 600
+  when:
+    - {feature: flow_count, op: ">=", value: 20}
+    - {feature: handshake_ratio, op: ">", value: 0.80}
+    - {feature: mean_duration, op: "<", value: 10}
+    - {feature: mean_bytes_out, op: "<", value: 5000}
+  confidence: 0.85
+  attack_type: "Brute Force"
+  attack_id: T1110
+  default_intent: block_source_ip
+  allowed_intents: [block_source_ip, review_account_activity, enable_verbose_logging, no_action]
+
+- id: ZEEK_SSH_PASSWORD_GUESSING
+  # Zeek's own detector (policy/protocols/ssh/detect-bruteforcing). Merges into the
+  # BRUTE_FORCE incident for the same source when both fire.
+  source: notice
+  filter: {name: ["SSH::Password_Guessing"]}
+  group_by: [src_ip]
+  window: 600
+  correlation_window: 600
+  when:
+    - {feature: notice_count, op: ">=", value: 1}
+  confidence: 0.90
+  attack_type: "Brute Force"
+  attack_id: T1110
+  default_intent: block_source_ip
+  allowed_intents: [block_source_ip, review_account_activity, enable_verbose_logging, no_action]
+
+# ---------------------------------------------------------------- web reconnaissance
+- id: HTTP_WORDLIST_SCAN
+  source: http
+  group_by: [src_ip, dst_ip]
+  window: 60
+  correlation_window: 300
+  when:
+    - {feature: request_count, op: ">=", value: 50}
+    - {feature: not_found_ratio, op: ">", value: 0.60}
+    - {feature: distinct_uri_count, op: ">=", value: 40}
+  confidence: 0.85
+  attack_type: "Active Scanning: Wordlist Scanning"
+  attack_id: T1595.003
+  default_intent: block_source_ip
+  allowed_intents: [block_source_ip, enable_verbose_logging, no_action]
+
+- id: SCANNER_USER_AGENT
+  # The User-Agent text never leaves the sensor reader; only its category does.
+  source: http
+  group_by: [src_ip, dst_ip]
+  window: 300
+  correlation_window: 600
+  when:
+    - {feature: request_count, op: ">=", value: 3}
+    - {feature: scanner_ua_ratio, op: ">=", value: 0.50}
+  confidence: 0.80
+  attack_type: "Active Scanning: Vulnerability Scanning"
+  attack_id: T1595.002
+  default_intent: block_source_ip
+  allowed_intents: [block_source_ip, enable_verbose_logging, no_action]
+
+# ---------------------------------------------------------------- encrypted C2
+- id: SELF_SIGNED_TLS_REPEATED
+  # Weak alone (internal services use self-signed certs); it matters next to BEACONING
+  # from the same host, which the campaign view shows.
+  source: tls
+  group_by: [src_ip, dst_ip, dst_port]
+  window: 900
+  correlation_window: 1800
+  when:
+    - {feature: session_count, op: ">=", value: 5}
+    - {feature: self_signed_ratio, op: ">", value: 0.90}
+  confidence: 0.60
+  attack_type: "Encrypted Channel"
+  attack_id: T1573
+  default_intent: enable_verbose_logging
+  allowed_intents: [enable_verbose_logging, isolate_host, no_action]
+
+- id: NEW_TLS_FINGERPRINT
+  # Needs a profile and a sensor that computes JA3/JA4 (zkg install ja3 / ja4).
+  source: tls
+  group_by: [src_ip, dst_ip, dst_port]
+  window: 900
+  correlation_window: 1800
+  when:
+    - {feature: session_count, op: ">=", value: 5}
+    - {feature: new_ja3_ratio, op: ">", value: 0.99}
+  confidence: 0.65
+  attack_type: "Application Layer Protocol: Unseen TLS Client"
+  attack_id: T1071.001
+  default_intent: enable_verbose_logging
+  allowed_intents: [enable_verbose_logging, isolate_host, no_action]
+
+# ---------------------------------------------------------------- behavioural exfiltration
+- id: NEW_DESTINATION_BULK_UPLOAD
+  # Behaviour, not shape: the host sends far more than its baseline, to a destination it
+  # has never contacted. Needs a profile (python -m nids train).
+  source: conn
+  group_by: [src_ip, dst_ip]
+  window: 3600
+  correlation_window: 3600
+  when:
+    - {feature: bytes_out, op: ">", value: 100000000}
+    - {feature: new_dst_ratio, op: ">=", value: 0.99}
+    - {feature: bytes_out_vs_baseline, op: ">", value: 10}
+  confidence: 0.80
+  attack_type: "Exfiltration: Bulk Upload to New Destination"
+  attack_id: T1048
+  default_intent: isolate_host
+  allowed_intents: [isolate_host, block_source_ip, enable_verbose_logging, review_account_activity, no_action]

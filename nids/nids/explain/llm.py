@@ -11,6 +11,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import os
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -31,6 +32,18 @@ class ExplainResult:
     validation_passed: bool
     source: str  # "llm" | "cache" | "template"
     reasons: list[str] = field(default_factory=list)
+    template: Narrative | None = None  # always produced: ablation arm B and the fallback
+    latency_ms: float | None = None  # model round trip, when a model was called
+
+    def __post_init__(self) -> None:
+        if self.template is None:
+            self.template = self.narrative
+
+
+# The model must return exactly this shape; the validator re-checks it regardless.
+# Citations are required here because the validator rejects a narrative without them.
+SCHEMA = Narrative.model_json_schema()
+SCHEMA["required"] = [*SCHEMA["required"], "technical_evidence"]
 
 
 def ollama_chat(model: str, base_url: str = "http://127.0.0.1:11434", timeout: float = 60) -> ChatFn:
@@ -40,7 +53,7 @@ def ollama_chat(model: str, base_url: str = "http://127.0.0.1:11434", timeout: f
             json={
                 "model": model,
                 "stream": False,
-                "format": "json",
+                "format": SCHEMA,  # Ollama >= 0.5 constrains decoding to the schema
                 "options": {"temperature": 0},
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             },
@@ -62,7 +75,8 @@ def openai_chat(model: str, base_url: str = "https://api.openai.com/v1", timeout
             json={
                 "model": model,
                 "temperature": 0,
-                "response_format": {"type": "json_object"},
+                "response_format": {"type": "json_schema",
+                                    "json_schema": {"name": "incident_narrative", "schema": SCHEMA, "strict": False}},
                 "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             },
             timeout=timeout,
@@ -133,7 +147,7 @@ class Explainer:
     def explain(self, incident: Incident, allowed_intents: list[str], default_intent: str) -> ExplainResult:
         fallback = template.render(incident, default_intent)
         if self.chat is None:
-            return ExplainResult(fallback, False, "template", ["no LLM backend configured"])
+            return ExplainResult(fallback, False, "template", ["no LLM backend configured"], fallback)
 
         evidence = P.safe_evidence(incident)
         cls = P.classification(incident, allowed_intents)
@@ -142,26 +156,29 @@ class Explainer:
         if cached:
             ok, narrative, reasons = validate(cached, incident, evidence, allowed_intents, default_intent)
             if ok and narrative:
-                return ExplainResult(narrative, True, "cache")
+                return ExplainResult(narrative, True, "cache", [], fallback)
 
         redactor = Redactor(self.assets) if self.backend == "openai" else None
         sent_evidence = redactor.redact(evidence) if redactor else evidence
-        user = P.user_message(sent_evidence, cls)
+        user = P.user_message(sent_evidence, cls, P.context(incident))
         if self.backend != "ollama":
             self.egress_log(incident.incident_id, self.backend, user)
 
+        t0 = time.perf_counter()
+        latency = None
         try:
             raw_text = self.chat(P.SYSTEM_PROMPT, user)
+            latency = round((time.perf_counter() - t0) * 1000, 1)
             if redactor:
                 raw_text = redactor.restore(raw_text)
             raw = json.loads(raw_text)
             if not isinstance(raw, dict):
                 raise ValueError("model did not return a JSON object")
         except (requests.RequestException, ValueError, KeyError) as exc:
-            return ExplainResult(fallback, False, "template", [f"llm error: {type(exc).__name__}"])
+            return ExplainResult(fallback, False, "template", [f"llm error: {type(exc).__name__}"], fallback, latency)
 
         ok, narrative, reasons = validate(raw, incident, evidence, allowed_intents, default_intent)
         if not ok or narrative is None:
-            return ExplainResult(fallback, False, "template", reasons)
+            return ExplainResult(fallback, False, "template", reasons, fallback, latency)
         self.cache_put(fp, narrative.model_dump())
-        return ExplainResult(narrative, True, "llm")
+        return ExplainResult(narrative, True, "llm", [], fallback, latency)

@@ -15,12 +15,16 @@ import statistics
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
-from nids.models import DnsQuery, Flow
+from nids.models import DnsQuery, Flow, HttpRequest, Notice, TlsSession
 
-FEATURE_REGISTRY_VERSION = "1"
+if TYPE_CHECKING:
+    from nids.profile import Profile
+
+FEATURE_REGISTRY_VERSION = "2"
 
 
 @dataclass(frozen=True)
@@ -60,10 +64,25 @@ FEATURE_REGISTRY: dict[str, FeatureSpec] = {
         FeatureSpec("active_duration", "s", "conn.log", "window"),
         FeatureSpec("iat_mean", "s", "conn.log", "window"),
         FeatureSpec("iat_cv", "ratio", "conn.log", "window"),
+        FeatureSpec("handshake_ratio", "ratio", "conn.log", "window"),
+        FeatureSpec("mean_duration", "s", "conn.log", "window"),
+        FeatureSpec("mean_bytes_out", "bytes", "conn.log", "window"),
+        # behavioural, need a baseline profile (nids/profile.py)
+        FeatureSpec("new_dst_ratio", "ratio", "conn.log+profile", "window"),
+        FeatureSpec("bytes_out_vs_baseline", "x baseline", "conn.log+profile", "window"),
+        FeatureSpec("new_ja3_ratio", "ratio", "ssl.log+profile", "window"),
         FeatureSpec("query_count", "count", "dns.log", "window"),
         FeatureSpec("mean_label_length", "chars", "dns.log", "window"),
         FeatureSpec("unique_subdomain_ratio", "ratio", "dns.log", "window"),
         FeatureSpec("label_entropy", "bits/char", "dns.log", "window"),
+        FeatureSpec("request_count", "count", "http.log", "window"),
+        FeatureSpec("client_error_ratio", "ratio", "http.log", "window"),
+        FeatureSpec("not_found_ratio", "ratio", "http.log", "window"),
+        FeatureSpec("distinct_uri_count", "count", "http.log", "window"),
+        FeatureSpec("scanner_ua_ratio", "ratio", "http.log", "window"),
+        FeatureSpec("session_count", "count", "ssl.log", "window"),
+        FeatureSpec("self_signed_ratio", "ratio", "ssl.log", "window"),
+        FeatureSpec("notice_count", "count", "notice.log", "window"),
     ]
 }
 
@@ -131,6 +150,9 @@ def conn_window_features(flows: Sequence[Flow]) -> dict[str, float]:
         "active_duration": span,
         "iat_mean": iat_mean,
         "iat_cv": iat_cv,
+        "handshake_ratio": sum("h" in f.history and "A" in f.history for f in flows) / n,
+        "mean_duration": statistics.fmean(f.duration for f in flows),
+        "mean_bytes_out": statistics.fmean(f.orig_bytes for f in flows),
     }
 
 
@@ -153,8 +175,58 @@ def dns_window_features(queries: Sequence[DnsQuery]) -> dict[str, float]:
     }
 
 
+def http_window_features(reqs: Sequence[HttpRequest]) -> dict[str, float]:
+    n = len(reqs)
+    return {
+        "request_count": n,
+        "client_error_ratio": sum(400 <= r.status_code < 500 for r in reqs) / n,
+        "not_found_ratio": sum(r.status_code == 404 for r in reqs) / n,
+        "distinct_uri_count": len({r.uri_hash for r in reqs if r.uri_hash}),
+        "scanner_ua_ratio": sum(r.ua_category == "scanner" for r in reqs) / n,
+    }
+
+
+def tls_window_features(sessions: Sequence[TlsSession], profile: Profile | None) -> dict[str, float]:
+    n = len(sessions)
+    out = {
+        "session_count": n,
+        "self_signed_ratio": sum(t.validation_status == "self_signed" for t in sessions) / n,
+    }
+    if profile is not None:
+        verdicts = [profile.is_new_fingerprint(t.ja3, t.ja4) for t in sessions]
+        known = [v for v in verdicts if v is not None]
+        if known:  # absent entirely when the sensor computes no fingerprints
+            out["new_ja3_ratio"] = sum(known) / len(known)
+    return out
+
+
+def profile_conn_features(flows: Sequence[Flow], profile: Profile) -> dict[str, float]:
+    src = flows[0].src_ip
+    return {
+        "new_dst_ratio": sum(profile.is_new_dst(f.src_ip, f.dst_ip) for f in flows) / len(flows),
+        "bytes_out_vs_baseline": sum(f.orig_bytes for f in flows) / profile.bytes_baseline(src),
+    }
+
+
+def window_features(source: str, recs: Sequence, profile: Profile | None = None) -> dict[str, float]:
+    if source == "conn":
+        feats = conn_window_features(recs)
+        if profile is not None:
+            feats.update(profile_conn_features(recs, profile))
+        return feats
+    if source == "dns":
+        return dns_window_features(recs)
+    if source == "http":
+        return http_window_features(recs)
+    if source == "tls":
+        return tls_window_features(recs, profile)
+    if source == "notice":
+        return {"notice_count": len(recs)}
+    raise ValueError(f"unknown source {source!r}")
+
+
 def hopping_windows(
-    records: Iterable[Flow | DnsQuery], key_fields: Sequence[str], window_s: float, hop_s: float | None = None
+    records: Iterable[Flow | DnsQuery | HttpRequest | TlsSession | Notice], key_fields: Sequence[str], window_s: float, hop_s: float | None = None
 ) -> list[tuple[tuple[str, ...], float, list]]:
     """Group records into epoch-aligned windows of window_s that start every hop_s seconds.
 

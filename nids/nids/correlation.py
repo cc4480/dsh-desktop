@@ -16,13 +16,22 @@ from nids.models import SEVERITY_ORDER, Alert, Incident
 from nids.rules import Rule
 
 ANOMALY_WINDOW = 120.0
+# Engines that score single flows. Their alerts enrich a rule incident they overlap, or
+# group into their own incident once enough of them agree on one pair.
+POINT_ENGINES = ("anomaly", "supervised")
 DEFAULT_WINDOW = 300.0
 # A single flow above the 0.99 percentile is, by construction, a 1-in-100 benign event.
 # Standalone anomaly incidents therefore need several anomalous flows on the same pair;
 # lone ones are counted as watchlist only.
 ANOMALY_MIN_FLOWS = 3
+# ...but when the baseline profile already knows the (src, dst) relationship, rare-but-
+# legitimate traffic (an admin's long SSH session) must recur much more before it becomes
+# an incident on statistics alone. A new relationship needs only ANOMALY_MIN_FLOWS.
+ANOMALY_MIN_FLOWS_KNOWN_PAIR = 10
+CAMPAIGN_GAP = 3600.0
 INT_FEATURES = {"packets_per_second", "bytes_out", "bytes_in", "query_count", "distinct_dst_ips",
-                "distinct_dst_ports", "flow_count"}
+                "distinct_dst_ports", "flow_count", "request_count", "distinct_uri_count", "session_count",
+                "notice_count", "mean_bytes_out"}
 
 
 def severity_for(
@@ -66,6 +75,29 @@ def severity_for(
     return sev, reasons
 
 
+def link_campaigns(incidents: Sequence[Incident], gap: float = CAMPAIGN_GAP) -> None:
+    """Chain incidents from the same source that follow each other within `gap` seconds.
+
+    A chain spanning at least two attack types (scan -> brute force, beacon -> exfil) is a
+    multi-stage campaign and gets one campaign_id. Severity is not changed here: the
+    repeat-offender modifier in severity_for already covers recurrence.
+    """
+    by_src: dict[str, list[Incident]] = {}
+    for inc in sorted(incidents, key=lambda i: i.ts_start):
+        by_src.setdefault(inc.src_ip, []).append(inc)
+    for src, items in by_src.items():
+        chain: list[Incident] = []
+        for inc in items + [None]:  # type: ignore[list-item]
+            if inc is not None and (not chain or inc.ts_start - max(c.ts_end for c in chain) <= gap):
+                chain.append(inc)
+                continue
+            if len({c.attack_type for c in chain}) >= 2:
+                cid = "CMP-" + hashlib.sha256(f"{src}|{chain[0].incident_id}".encode()).hexdigest()[:6]
+                for c in chain:
+                    c.campaign_id = cid
+            chain = [inc] if inc is not None else []
+
+
 def _incident_id(alert: Alert) -> str:
     day = datetime.fromtimestamp(alert.ts_start, tz=timezone.utc).strftime("%Y-%m-%d")
     digest = hashlib.sha256(
@@ -81,12 +113,14 @@ class Correlator:
         assets: AssetRegistry,
         recent_sources: Callable[[str, float], bool] | None = None,
         anomaly_min_flows: int = ANOMALY_MIN_FLOWS,
+        known_pair: Callable[[str, str], bool] | None = None,
     ):
         self.windows = {r.id: r.correlation_window for r in rules}
         self.rule_features = {r.id: [c.feature for c in r.when] for r in rules}
         self.assets = assets
         self.recent_sources = recent_sources or (lambda src, ts: False)
         self.anomaly_min_flows = anomaly_min_flows
+        self.known_pair = known_pair or (lambda src, dst: False)
         self.watchlist = 0  # anomalous flows that did not form or join an incident
         self.incident_uids: dict[str, set[str]] = {}  # every flow uid an incident's alerts cover
 
@@ -94,12 +128,17 @@ class Correlator:
         open_: dict[tuple, dict] = {}
         done: list[dict] = []
 
-        rule_alerts = [a for a in alerts if a.engine != "anomaly"]
-        anomaly_alerts = [a for a in alerts if a.engine == "anomaly"]
+        rule_alerts = [a for a in alerts if a.engine not in POINT_ENGINES]
+        anomaly_alerts = [a for a in alerts if a.engine in POINT_ENGINES]
 
         for a in sorted(rule_alerts, key=lambda x: x.ts_start):
             key = (a.src_ip, a.dst_ip, a.attack_type)
             window = self.windows.get(a.rule_id or "", DEFAULT_WINDOW)
+            if a.dst_ip is None:
+                # A destination-less alert (e.g. a Zeek notice) joins an open incident of the
+                # same type from the same source rather than opening a parallel one.
+                key = next((k for k, g in open_.items() if k[0] == a.src_ip and k[2] == a.attack_type
+                            and a.ts_start - g["ts_end"] <= window), key)
             cur = open_.get(key)
             if cur and a.ts_start - cur["ts_end"] <= window:
                 self._merge(cur, a)
@@ -127,7 +166,7 @@ class Correlator:
             if host:
                 self._merge(host, a, count_flows=False)
                 continue
-            key = (a.src_ip, a.dst_ip)
+            key = (a.src_ip, a.dst_ip, a.engine)
             cur = anomaly_open.get(key)
             if cur and a.ts_start - cur["ts_end"] <= ANOMALY_WINDOW:
                 self._merge(cur, a)
@@ -137,10 +176,12 @@ class Correlator:
                 anomaly_open[key] = self._new(a)
 
         anomaly_groups = list(anomaly_open.values()) + anomaly_done
-        kept = [g for g in anomaly_groups if len(g["alerts"]) >= self.anomaly_min_flows]
+        kept = [g for g in anomaly_groups if len(g["alerts"]) >= self._min_flows(g)]
         self.watchlist = sum(len(g["alerts"]) for g in anomaly_groups) - sum(len(g["alerts"]) for g in kept)
         groups = rule_groups + kept
-        return sorted((self._finalise(g) for g in groups), key=lambda i: i.ts_start)
+        incidents = sorted((self._finalise(g) for g in groups), key=lambda i: i.ts_start)
+        link_campaigns(incidents)
+        return incidents
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -169,19 +210,27 @@ class Correlator:
             else:
                 g["extra_flows"] += a.flow_count
 
+    def _min_flows(self, g: dict) -> int:
+        if g["dst_ip"] and self.known_pair(g["src_ip"], g["dst_ip"]):
+            return ANOMALY_MIN_FLOWS_KNOWN_PAIR
+        return self.anomaly_min_flows
+
     def _detected_at(self, alerts: list[Alert]) -> float:
         """Earliest moment the incident could have been raised."""
-        rule_times = [a.emitted_at for a in alerts if a.engine != "anomaly"]
-        if rule_times:
-            return min(rule_times)
-        times = sorted(a.emitted_at for a in alerts)  # anomaly-only: needs the k-th flow
-        return times[min(self.anomaly_min_flows, len(times)) - 1]
+        candidates = [a.emitted_at for a in alerts if a.engine not in POINT_ENGINES]
+        for engine in POINT_ENGINES:  # a per-flow engine alone needs its k-th flow
+            times = sorted(a.emitted_at for a in alerts if a.engine == engine)
+            if len(times) >= self.anomaly_min_flows:
+                candidates.append(times[self.anomaly_min_flows - 1])
+        if candidates:
+            return min(candidates)
+        return max(a.emitted_at for a in alerts)
 
     def _finalise(self, g: dict) -> Incident:
         alerts: list[Alert] = g["alerts"]
         g["flow_count"] = len(g["uids"]) + g["extra_flows"]
         self.incident_uids[g["id"]] = set().union(*(a.flow_uids for a in alerts))
-        primary = [a for a in alerts if a.engine != "anomaly"] or alerts
+        primary = [a for a in alerts if a.engine not in POINT_ENGINES] or alerts
         confidence = max(a.confidence for a in primary)
         rule_ids = sorted({a.rule_id for a in alerts if a.rule_id})
         engines = sorted({a.engine for a in alerts})
@@ -229,13 +278,16 @@ class Correlator:
         for feat in dict.fromkeys(feats):
             if feat in evidence or feat == "flow_count" or not any(feat in a.features for a in primary):
                 continue
-            if feat == "bytes_out" and all(a.engine == "anomaly" for a in primary):
+            if feat == "bytes_out" and all(a.engine in POINT_ENGINES for a in primary):
                 v = sum(float(a.features.get("bytes_out", 0)) for a in primary)
             else:
                 v = peak(feat)
             evidence[feat] = int(v) if feat in INT_FEATURES else round(v, 3)
         if anomaly_scores:
             evidence["anomaly_score"] = round(max(anomaly_scores), 4)
+        sup = [float(a.features["supervised_probability"]) for a in alerts if "supervised_probability" in a.features]
+        if sup:
+            evidence["supervised_probability"] = round(max(sup), 4)
         if asset:
             evidence["asset_name"] = asset.name
             evidence["asset_service"] = asset.service

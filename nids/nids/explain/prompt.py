@@ -13,10 +13,14 @@ import json
 import re
 from pathlib import Path
 
+import yaml
+
 from nids.models import Incident
 
-PROMPT_VERSION = "2"
-SYSTEM_PROMPT = (Path(__file__).resolve().parents[2] / "prompts" / "system_prompt.txt").read_text(encoding="utf-8")
+PROMPT_VERSION = "3"
+ROOT = Path(__file__).resolve().parents[2]
+SYSTEM_PROMPT = (ROOT / "prompts" / "system_prompt.txt").read_text(encoding="utf-8")
+CONTEXT_MAX_CHARS = 2000
 _TOKEN = re.compile(r"^[A-Za-z0-9._:+\-]{0,64}$")
 
 
@@ -42,9 +46,33 @@ def classification(incident: Incident, allowed_intents: list[str]) -> dict:
     }
 
 
-def user_message(evidence: dict, cls: dict) -> str:
+def _attack_reference() -> dict:
+    path = ROOT / "config" / "attack.yaml"
+    return yaml.safe_load(path.read_text(encoding="utf-8")) if path.exists() else {}
+
+
+def context(incident: Incident) -> str:
+    """Trusted reference text: our ATT&CK summary and our runbook. Never telemetry.
+
+    This is the project's retrieval step. It is a deterministic lookup by technique ID
+    and rule ID, not a vector search: the classification is already known, so there is
+    nothing to search for, and a lookup cannot be steered by attacker-controlled data.
+    """
+    parts = []
+    ref = _attack_reference().get(incident.attack_id or "")
+    if ref:
+        parts.append(f"ATT&CK {incident.attack_id} {ref['name']} ({ref['tactic']}): {ref['summary']}")
+    for rid in incident.rule_ids or ["ANOMALY"]:
+        rb = ROOT / "runbooks" / f"{rid}.md"
+        if rb.exists():
+            parts.append(f"Runbook {rid}:\n" + rb.read_text(encoding="utf-8").strip())
+    return "\n\n".join(parts)[:CONTEXT_MAX_CHARS]
+
+
+def user_message(evidence: dict, cls: dict, ctx: str = "") -> str:
     return (
-        "<CLASSIFICATION>\n" + json.dumps(cls, indent=2, sort_keys=True) + "\n</CLASSIFICATION>\n\n"
+        ("<CONTEXT>\n" + ctx + "\n</CONTEXT>\n\n" if ctx else "")
+        + "<CLASSIFICATION>\n" + json.dumps(cls, indent=2, sort_keys=True) + "\n</CLASSIFICATION>\n\n"
         "<EVIDENCE>\n" + json.dumps(evidence, indent=2, sort_keys=True) + "\n</EVIDENCE>"
     )
 

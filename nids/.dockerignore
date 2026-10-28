@@ -3,3 +3,4 @@ models
 __pycache__
 .pytest_cache
 .streamlit/secrets.toml
+config/users.yaml

@@ -17,10 +17,29 @@ def lab(tmp_path_factory) -> Path:
 
 
 @pytest.fixture(scope="session")
-def anomaly_model(lab, tmp_path_factory):
-    from nids import anomaly
-    from nids.sensing import zeek
+def trained(lab, tmp_path_factory) -> dict[str, Path]:
+    """Anomaly model + behavioural profile, built exactly as `python -m nids train` does."""
+    from nids import __main__ as cli
 
-    path = tmp_path_factory.mktemp("models") / "anomaly.joblib"
-    anomaly.train(zeek.read_conn(lab / "baseline" / "conn.log")).save(path)
-    return path
+    d = tmp_path_factory.mktemp("models")
+    paths = {"anomaly": d / "anomaly.joblib", "profile": d / "profile.json"}
+    cli.main(["train", str(lab / "baseline"), "--out", str(paths["anomaly"]),
+              "--profile-out", str(paths["profile"])])
+    return paths
+
+
+@pytest.fixture(scope="session")
+def anomaly_model(trained) -> Path:
+    return trained["anomaly"]
+
+
+@pytest.fixture
+def config(trained, tmp_path):
+    """Pipeline config pointing at the session's trained artefacts and a fresh database."""
+    from nids import pipeline
+
+    def make(**kw):
+        return pipeline.Config(db_path=tmp_path / "nids.db", model_path=trained["anomaly"],
+                               profile_path=trained["profile"], supervised_path=None, **kw)
+
+    return make

@@ -3,9 +3,10 @@
 Scores a capture against its ground truth with three engine configurations, so the
 "does the ML earn its complexity?" question is answered with a table:
 
-    rules     rule signatures only
-    anomaly   Isolation Forest only (frozen-ECDF threshold, aggregated into incidents)
-    ensemble  rules + anomaly, correlated (what the pipeline ships)
+    rules       rule signatures only (with the behavioural profile, if one is trained)
+    anomaly     Isolation Forest + autoencoder only (frozen-ECDF thresholds)
+    supervised  the CIC-IDS2017 classifier through the Zeek adapter only
+    ensemble    everything available, correlated (what the pipeline ships)
 
 Two levels:
   incident level  episodes detected, false incidents, false incidents per hour,
@@ -28,13 +29,14 @@ from pathlib import Path
 import numpy as np
 from sklearn.metrics import average_precision_score
 
-from nids import anomaly, pipeline, rules
+from nids import anomaly, pipeline, rules, supervised
 from nids.assets import AssetRegistry
 from nids.features import flow_matrix
 from nids.models import Flow, Incident
 from nids.sensing import zeek
 
-CONFIGS = {"rules": ("rule",), "anomaly": ("anomaly",), "ensemble": ("rule", "anomaly")}
+CONFIGS = {"rules": ("rule",), "anomaly": ("anomaly",), "supervised": ("supervised",),
+           "ensemble": ("rule", "anomaly", "supervised")}
 INCIDENT_SLACK = 60.0  # seconds either side of an episode an incident may start/end in
 FLOW_SLACK = 2.0
 
@@ -132,7 +134,7 @@ def incident_level(incidents: Sequence[Incident], truth: Sequence[Episode], hour
 
 
 def flow_level(flows: Sequence[Flow], truth: Sequence[Episode], flagged: dict[str, set[str]],
-               scores: np.ndarray | None) -> dict:
+               scores: dict[str, np.ndarray]) -> dict:
     ignore = np.array([any(e.covers_flow(f) for e in truth if e.expect == "ignore") for f in flows])
     label = np.array([any(e.covers_flow(f) for e in truth if e.expect != "ignore") for f in flows])
     keep = ~ignore | label
@@ -151,10 +153,13 @@ def flow_level(flows: Sequence[Flow], truth: Sequence[Episode], flagged: dict[st
             m = np.array([e.covers_flow(f) for f, k in zip(flows, keep) if k])
             per_ep[e.attack] = round(float(pred[m].mean()), 4) if m.any() else None
         engines[name]["per_episode_recall"] = per_ep
-    if scores is not None and "anomaly" in engines:
-        s = scores[keep]
-        engines["anomaly"]["pr_auc"] = round(float(average_precision_score(y, s)), 4) if y.any() else None
-        engines["anomaly"]["benign_flows_over_threshold"] = int(((s > anomaly.ALERT_THRESHOLD) & ~y).sum())
+    thresholds = {"anomaly": anomaly.ALERT_THRESHOLD, "supervised": supervised.ALERT_PROBABILITY}
+    for name, sc in scores.items():
+        if name not in engines:
+            continue
+        s = sc[keep]
+        engines[name]["pr_auc"] = round(float(average_precision_score(y, s)), 4) if y.any() else None
+        engines[name]["benign_flows_over_threshold"] = int(((s > thresholds[name]) & ~y).sum())
     out["engines"] = engines
     return out
 
@@ -162,39 +167,46 @@ def flow_level(flows: Sequence[Flow], truth: Sequence[Episode], flagged: dict[st
 def evaluate(logdir: Path, truth_path: Path | None = None, cfg: pipeline.Config | None = None) -> dict:
     cfg = cfg or pipeline.Config()
     truth = load_truth(truth_path or _find_truth(logdir))
-    flows = zeek.read_conn(logdir / "conn.log")
-    dns_path = logdir / "dns.log"
-    dns = zeek.read_dns(dns_path) if dns_path.exists() else []
+    bundle = zeek.read_dir(logdir)
+    flows = bundle.flows
     rule_set = rules.load_rules(cfg.rules_path)
     assets = AssetRegistry.load(cfg.assets_path)
-    model = anomaly.AnomalyModel.load(cfg.model_path) if cfg.model_path and Path(cfg.model_path).exists() else None
+    models = pipeline.Models.load(cfg)
     hours = max((flows[-1].ts - flows[0].ts) / 3600, 1 / 3600) if flows else 0.0
 
     report: dict = {
-        "capture": {"logdir": str(logdir), "flows": len(flows), "dns_queries": len(dns),
+        "capture": {"logdir": str(logdir), "flows": len(flows), "dns_queries": len(bundle.dns),
+                    "http_requests": len(bundle.http), "tls_sessions": len(bundle.tls),
                     "hours": round(hours, 3), "episodes": len(truth)},
-        "anomaly_model": pipeline.model_meta(cfg.model_path) if model else None,
+        "engines": models.status(),
+        "inactive_rules": rules.inactive(rule_set, models.profile),
+        "anomaly_model": pipeline.model_meta(cfg.model_path) if models.anomaly else None,
         "incident_level": {},
         "flow_level": None,
-        "supervised": {"status": "not evaluated",
-                       "reason": "no Zeek->CICFlowMeter feature adapter yet; see ml/train_supervised.py "
-                                 "for the offline CIC-IDS2017 protocol"},
+        "supervised": models.supervised.report if models.supervised else
+        {"status": "not evaluated", "reason": "no supervised model (python ml/train_supervised.py --data <CIC dir>)"},
     }
+    available = {"anomaly": models.anomaly is not None, "supervised": models.supervised is not None}
     flagged: dict[str, set[str]] = {}
     for name, engines in CONFIGS.items():
-        if "anomaly" in engines and model is None:
-            report["incident_level"][name] = {"status": "skipped: no anomaly model"}
+        if name != "ensemble" and any(e in available and not available[e] for e in engines):
+            report["incident_level"][name] = {"status": f"skipped: no {engines[0]} model"}
             continue
-        det = pipeline.detect(flows, dns, rule_set, assets, model, engines=engines)
+        det = pipeline.detect(bundle, rule_set, assets, models, engines=engines)
         report["incident_level"][name] = incident_level(det.incidents, truth, hours)
         if name == "ensemble":
             flagged["ensemble"] = set().union(*det.incident_uids.values()) if det.incident_uids else set()
         elif name == "rules":
             flagged["rules"] = {u for a in det.alerts if a.engine == "rule" for u in a.flow_uids}
 
-    scores = model.score(flow_matrix(flows)) if model is not None else None
-    if scores is not None:
-        flagged["anomaly"] = {f.uid for f, s in zip(flows, scores) if s > anomaly.ALERT_THRESHOLD}
+    scores: dict[str, np.ndarray] = {}
+    if models.anomaly is not None:
+        scores["anomaly"] = models.anomaly.score(flow_matrix(flows), anomaly.hours_of(flows))
+        flagged["anomaly"] = {f.uid for f, s in zip(flows, scores["anomaly"]) if s > anomaly.ALERT_THRESHOLD}
+    if models.supervised is not None:
+        scores["supervised"] = models.supervised.predict(flows)
+        flagged["supervised"] = {f.uid for f, p in zip(flows, scores["supervised"])
+                                 if p >= supervised.ALERT_PROBABILITY}
     report["flow_level"] = flow_level(flows, truth, flagged, scores)
     return report
 
@@ -237,7 +249,10 @@ def to_markdown(r: dict) -> str:
             f"| {m['false_incidents']} | {_fmt(m['false_incidents_per_hour'])} "
             f"| {m['classified_correctly']}/{m['classifiable']} "
             f"| {_fmt(lat['p50'])} / {_fmt(lat['p95'])} / {_fmt(lat['max'])} |")
-    lines.append(f"| supervised | {r['supervised']['status']}: {r['supervised']['reason']} | | | | | | |")
+    if "status" in r["supervised"]:
+        lines.append(f"| supervised model | {r['supervised']['status']}: {r['supervised']['reason']} | | | | | | |")
+    if r.get("inactive_rules"):
+        lines += ["", f"Rules that could not fire (no profile): {', '.join(r['inactive_rules'])}."]
 
     ens = r["incident_level"].get("ensemble", {})
     if "per_episode" in ens:

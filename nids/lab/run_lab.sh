@@ -5,9 +5,10 @@
 #   lab/run_lab.sh attack               benign + scripted attacks    -> data/lab-docker/attack
 #
 # Then:
-#   python -m nids train-anomaly data/lab-docker/baseline --out models/anomaly-lab.joblib
+#   python -m nids train data/lab-docker/baseline --out models/anomaly-lab.joblib \
+#       --profile-out models/profile-lab.json
 #   python -m nids evaluate data/lab-docker/attack --assets config/assets.lab.yaml \
-#       --anomaly-model models/anomaly-lab.joblib
+#       --anomaly-model models/anomaly-lab.joblib --profile models/profile-lab.json
 set -euo pipefail
 cd "$(dirname "$0")"
 mode=${1:?usage: run_lab.sh baseline [seconds] | attack}
@@ -22,18 +23,18 @@ docker compose --profile attack build
 
 case "$mode" in
   baseline)
-    docker compose up -d target sensor client
+    docker compose up -d target sensor recorder client
     echo "capturing benign baseline for ${2:-1200}s ..."
     sleep "${2:-1200}"
     ;;
   attack)
     docker compose --profile attack up -d
-    echo "attack scenario running (about 15 min) ..."
+    echo "attack scenario running (about 20 min) ..."
     docker wait "$(docker compose ps -aq attacker)" "$(docker compose ps -aq implant)" >/dev/null
     sleep 15   # let the tail of the scenario reach the sensor
     ;;
   *) echo "unknown mode $mode" >&2; exit 2 ;;
 esac
 
-docker compose stop -t 60 sensor client   # SIGTERM: Zeek flushes open connections
+docker compose stop -t 60 sensor recorder client   # SIGTERM: Zeek flushes open connections
 echo "logs in $LAB_OUT:"; ls -la "$LAB_OUT"

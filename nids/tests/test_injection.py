@@ -50,10 +50,11 @@ def _good_reply(user: str) -> str:
 
 
 @pytest.fixture(scope="module")
-def flood(lab, anomaly_model, tmp_path_factory):
+def flood(lab, trained, tmp_path_factory):
     db = tmp_path_factory.mktemp("inj") / "nids.db"
-    cfg = pipeline.Config(db_path=db, model_path=anomaly_model)
-    incidents = pipeline.run(lab / "demo" / "conn.log", lab / "demo" / "dns.log", cfg)
+    cfg = pipeline.Config(db_path=db, model_path=trained["anomaly"], profile_path=trained["profile"],
+                          supervised_path=None)
+    incidents = pipeline.run(lab / "demo", cfg)
     return next(i for i in incidents if i.src_ip == "192.168.1.105")
 
 

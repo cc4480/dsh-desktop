@@ -10,12 +10,22 @@ _LEADS = {
     "HOST_SWEEP": "{src} probed {ips} hosts on port {port}; nearly all connection attempts failed.",
     "DNS_TUNNELING": "{src} issued {queries} DNS queries with long, mostly unique labels, consistent with data tunnelled over DNS.",
     "BEACONING": "{src} contacts {target} on port {port} at a near-constant interval of ~{iat}s, consistent with C2 beaconing.",
+    "BRUTE_FORCE": "{src} opened {flows} short login sessions to {target} on port {port}, consistent with password guessing.",
+    "ZEEK_SSH_PASSWORD_GUESSING": "Zeek's SSH detector flagged {src} for password guessing against {target}.",
+    "HTTP_WORDLIST_SCAN": "{src} requested {uris} distinct paths on {target}, most returning 404, consistent with a wordlist scan.",
+    "SCANNER_USER_AGENT": "{src} sent {requests} HTTP requests to {target} identifying as a known scanning tool.",
+    "SELF_SIGNED_TLS_REPEATED": "{src} repeatedly opened TLS sessions to {target} on port {port} that present a self-signed certificate.",
+    "NEW_TLS_FINGERPRINT": "{src} opened TLS sessions to {target} with a client fingerprint never seen in the baseline.",
+    "NEW_DESTINATION_BULK_UPLOAD": "{src} sent {mb} MB to {target}, a destination it never contacted in the baseline (~{ratio}x its normal hourly volume).",
     "": "{src} produced traffic to {target} that is more anomalous than {pct} of baseline traffic ({mb} MB sent).",
 }
 
 _CITE_ORDER = ["rule_match", "packets_per_second", "syn_ratio", "s0_ratio", "failed_conn_ratio",
                "distinct_dst_ports", "distinct_dst_ips", "mean_label_length", "unique_subdomain_ratio",
-               "iat_mean", "iat_cv", "bytes_out", "anomaly_score", "flow_count"]
+               "iat_mean", "iat_cv", "handshake_ratio", "mean_duration", "request_count", "not_found_ratio",
+               "distinct_uri_count", "scanner_ua_ratio", "session_count", "self_signed_ratio", "new_ja3_ratio",
+               "new_dst_ratio", "bytes_out_vs_baseline", "notice_count", "bytes_out", "anomaly_score",
+               "supervised_probability", "flow_count"]
 
 
 def render(incident: Incident, intent: str) -> Narrative:
@@ -31,6 +41,8 @@ def render(incident: Incident, intent: str) -> Narrative:
         ports=e.get("distinct_dst_ports", "?"), ips=e.get("distinct_dst_ips", "?"), port=e.get("dst_port", "?"),
         queries=e.get("query_count", "?"), iat=e.get("iat_mean", "?"),
         pct=f"{float(e.get('anomaly_score', 0)) * 100:.1f}%", mb=f"{float(e.get('bytes_out', 0)) / 1e6:,.0f}",
+        flows=e.get("flow_count", "?"), uris=e.get("distinct_uri_count", "?"), requests=e.get("request_count", "?"),
+        ratio=f"{float(e.get('bytes_out_vs_baseline', 0)):,.0f}",
     )
     summary = (
         f"{text} Classified as {incident.attack_type} ({incident.attack_id or 'no ATT&CK mapping'}) "

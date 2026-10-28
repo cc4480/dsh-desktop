@@ -1,0 +1,15 @@
+# Plane 6: response policy. The policy engine renders commands from these settings and
+# the allowlisted templates in nids/response/policy.py. Nothing is ever executed.
+
+firewall: iptables        # iptables | nftables
+iface: eth0               # capture interface for enable_verbose_logging
+capture_seconds: 900      # how long an incident capture runs before it stops itself
+
+rate_limit:
+  per_second: 50
+  burst: 100
+
+nftables:                 # where rules go when firewall: nftables
+  family: inet
+  table: filter
+  chain: input

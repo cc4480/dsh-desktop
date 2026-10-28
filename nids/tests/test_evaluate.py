@@ -8,30 +8,39 @@ from nids.anomaly import _edges, _proportions
 from nids.models import Flow
 
 
-def _report(lab, anomaly_model):
-    cfg = pipeline.Config(model_path=anomaly_model)
-    return evaluate.evaluate(lab / "demo", None, cfg)
+def _report(lab, config):
+    return evaluate.evaluate(lab / "demo", None, config())
 
 
-def test_ensemble_beats_each_engine_alone(lab, anomaly_model):
-    r = _report(lab, anomaly_model)
+def test_ensemble_detects_everything_with_no_false_incidents(lab, config):
+    r = _report(lab, config)
     inc = r["incident_level"]
-    assert inc["ensemble"]["episodes_detected"] == inc["ensemble"]["episodes"] == 6
+    assert inc["ensemble"]["episodes_detected"] == inc["ensemble"]["episodes"] == 8
     assert inc["ensemble"]["false_incidents"] == 0
-    assert inc["ensemble"]["severity_as_expected"] == 6
-    assert inc["ensemble"]["classified_correctly"] == inc["ensemble"]["classifiable"]
+    assert inc["ensemble"]["severity_as_expected"] == 8
+    assert inc["ensemble"]["classified_correctly"] == inc["ensemble"]["classifiable"] == 8
+    assert inc["supervised"]["status"].startswith("skipped")
 
-    rules_eps = {e["attack"]: e["detected"] for e in inc["rules"]["per_episode"]}
     anom_eps = {e["attack"]: e["detected"] for e in inc["anomaly"]["per_episode"]}
-    assert not rules_eps["NOVEL_BULK_UPLOAD"]  # no signature for it
     assert not anom_eps["DNS_TUNNELING"]  # each query is individually ordinary
+    assert not anom_eps["SSH_BRUTE_FORCE"]  # each login session is individually ordinary
     assert inc["anomaly"]["classified_correctly"] == 0  # anomaly alone never names an attack
 
 
-def test_latency_and_flow_metrics_are_sane(lab, anomaly_model):
-    r = _report(lab, anomaly_model)
+def test_without_a_profile_the_rules_miss_the_upload_and_the_anomaly_engine_does_not(lab, config):
+    cfg = config()
+    cfg.profile_path = None
+    r = evaluate.evaluate(lab / "demo", None, cfg)
+    rules_eps = {e["attack"]: e["detected"] for e in r["incident_level"]["rules"]["per_episode"]}
+    anom_eps = {e["attack"]: e["detected"] for e in r["incident_level"]["anomaly"]["per_episode"]}
+    assert not rules_eps["NOVEL_BULK_UPLOAD"] and anom_eps["NOVEL_BULK_UPLOAD"]
+    assert "NEW_DESTINATION_BULK_UPLOAD" in r["inactive_rules"]
+
+
+def test_latency_and_flow_metrics_are_sane(lab, config):
+    r = _report(lab, config)
     eps = {e["attack"]: e for e in r["incident_level"]["ensemble"]["per_episode"]}
-    assert 0 <= eps["SYN_FLOOD"]["latency_s"] <= 10  # 10 s window, 5 s hop
+    assert 0 <= eps["SYN_FLOOD"]["latency_s"] <= 2  # fires as soon as the condition holds
     assert eps["BEACONING"]["latency_s"] > eps["SYN_FLOOD"]["latency_s"]
     fl = r["flow_level"]
     assert fl["attack_flows"] + fl["benign_flows"] == fl["flows"]
@@ -41,14 +50,15 @@ def test_latency_and_flow_metrics_are_sane(lab, anomaly_model):
     assert "| ensemble |" in evaluate.to_markdown(r)
 
 
-def test_false_incident_is_counted(lab, anomaly_model, tmp_path):
+def test_false_incident_is_counted(lab, config, tmp_path):
     truth = json.loads((lab / "demo" / "ground_truth.json").read_text())
     dropped = [g for g in truth if g["attack"] != "BEACONING"]
     path = tmp_path / "truth.jsonl"
     path.write_text("\n".join(json.dumps(g) for g in dropped))  # JSONL loads too
-    r = evaluate.evaluate(lab / "demo", path, pipeline.Config(model_path=anomaly_model))
+    r = evaluate.evaluate(lab / "demo", path, config())
     ens = r["incident_level"]["ensemble"]
-    assert ens["false_incidents"] == 1 and ens["false_incident_examples"][0]["src"] == "192.168.1.60"
+    # beacon + self-signed TLS + unseen TLS client: three incidents with no episode now
+    assert ens["false_incidents"] == 3 and {x["src"] for x in ens["false_incident_examples"]} == {"192.168.1.60"}
 
 
 def _scan(t0: float) -> list[Flow]:

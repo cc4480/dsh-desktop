@@ -71,6 +71,29 @@ CREATE TABLE IF NOT EXISTS egress_log (
     payload TEXT NOT NULL,
     sent_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS incident_status (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('open', 'acknowledged', 'closed')),
+    viewer TEXT NOT NULL,
+    note TEXT NOT NULL,
+    at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS study_responses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    analyst TEXT NOT NULL,
+    incident_id TEXT NOT NULL,
+    version TEXT NOT NULL CHECK (version IN ('A', 'B', 'C')),
+    answer_what TEXT NOT NULL,
+    answer_action TEXT NOT NULL,
+    correct_what INTEGER NOT NULL,
+    correct_action INTEGER NOT NULL,
+    seconds_what REAL NOT NULL,
+    seconds_action REAL NOT NULL,
+    actionability INTEGER NOT NULL,
+    confidence INTEGER NOT NULL,
+    at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at REAL NOT NULL,
@@ -83,12 +106,24 @@ CREATE TABLE IF NOT EXISTS runs (
 """
 
 
+CACHE_TTL = 7 * 86400.0  # a cached narrative older than this is regenerated
+
+
 class Store:
     def __init__(self, path: str | Path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.db.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Additive column migrations, so an existing database keeps working."""
+        cols = {r["name"] for r in self.db.execute("PRAGMA table_info(narratives)")}
+        for col, decl in (("template", "TEXT"), ("latency_ms", "REAL")):
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE narratives ADD COLUMN {col} {decl}")
+        self.db.commit()
 
     # ---------------------------------------------------------------- writes
     def save_incident(self, inc: Incident) -> None:
@@ -99,12 +134,48 @@ class Store:
         )
         self.db.commit()
 
-    def save_narrative(self, incident_id: str, body: dict, passed: bool, source: str, reasons: list[str]) -> None:
+    def save_narrative(self, incident_id: str, body: dict, passed: bool, source: str, reasons: list[str],
+                       template: dict | None = None, latency_ms: float | None = None) -> None:
         self.db.execute(
-            "INSERT OR REPLACE INTO narratives VALUES (?,?,?,?,?,?)",
-            (incident_id, json.dumps(body), int(passed), source, json.dumps(reasons), time.time()),
+            "INSERT OR REPLACE INTO narratives (incident_id, body, validation_passed, source, reasons, created_at,"
+            " template, latency_ms) VALUES (?,?,?,?,?,?,?,?)",
+            (incident_id, json.dumps(body), int(passed), source, json.dumps(reasons), time.time(),
+             json.dumps(template or body), latency_ms),
         )
         self.db.commit()
+
+    def set_status(self, incident_id: str, status: str, viewer: str, note: str = "") -> None:
+        if status not in ("open", "acknowledged", "closed"):
+            raise ValueError(f"unknown status {status!r}")
+        self.db.execute("INSERT INTO incident_status (incident_id, status, viewer, note, at) VALUES (?,?,?,?,?)",
+                        (incident_id, status, viewer[:40], note[:500], time.time()))
+        self.db.commit()
+
+    def status_of(self, incident_id: str) -> str:
+        row = self.db.execute("SELECT status FROM incident_status WHERE incident_id=? ORDER BY id DESC LIMIT 1",
+                              (incident_id,)).fetchone()
+        return row["status"] if row else "open"
+
+    def get_incident(self, incident_id: str) -> dict | None:
+        row = self.db.execute("SELECT body FROM incidents WHERE incident_id=?", (incident_id,)).fetchone()
+        return json.loads(row["body"]) if row else None
+
+    def save_study_response(self, **r) -> None:
+        self.db.execute(
+            "INSERT INTO study_responses (analyst, incident_id, version, answer_what, answer_action, correct_what,"
+            " correct_action, seconds_what, seconds_action, actionability, confidence, at)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            (r["analyst"][:40], r["incident_id"], r["version"], r["answer_what"], r["answer_action"],
+             int(r["correct_what"]), int(r["correct_action"]), float(r["seconds_what"]), float(r["seconds_action"]),
+             int(r["actionability"]), int(r["confidence"]), time.time()),
+        )
+        self.db.commit()
+
+    def study_responses(self, analyst: str | None = None) -> list[dict]:
+        q, args = "SELECT * FROM study_responses", ()
+        if analyst:
+            q, args = q + " WHERE analyst=?", (analyst,)
+        return [dict(r) for r in self.db.execute(q + " ORDER BY id", args).fetchall()]
 
     def save_command(self, incident_id: str, intent: str, command: str | None, rollback: str | None,
                      dry_run: str | None, refused: str | None) -> None:
@@ -136,8 +207,9 @@ class Store:
                         (incident_id, backend, payload, time.time()))
         self.db.commit()
 
-    def cache_get(self, fp: str) -> dict | None:
-        row = self.db.execute("SELECT body FROM llm_cache WHERE fingerprint=?", (fp,)).fetchone()
+    def cache_get(self, fp: str, max_age: float = CACHE_TTL) -> dict | None:
+        row = self.db.execute("SELECT body FROM llm_cache WHERE fingerprint=? AND created_at >= ?",
+                              (fp, time.time() - max_age)).fetchone()
         return json.loads(row["body"]) if row else None
 
     def cache_put(self, fp: str, body: dict) -> None:
@@ -145,21 +217,38 @@ class Store:
         self.db.commit()
 
     def save_run(self, source: str, flows: int, alerts: int, incidents: int, stats: dict) -> None:
+        if stats.get("live"):  # watch mode keeps one rolling row per source, not one per pass
+            self.db.execute("DELETE FROM runs WHERE source=? AND json_extract(stats, '$.live') = 1", (source,))
         self.db.execute("INSERT INTO runs (started_at, source, flows, alerts, incidents, stats) VALUES (?,?,?,?,?,?)",
                         (time.time(), source, flows, alerts, incidents, json.dumps(stats)))
         self.db.commit()
 
     # ---------------------------------------------------------------- reads
-    def recent_source(self, src_ip: str, ts: float, horizon: float = 86400.0) -> bool:
-        row = self.db.execute(
-            "SELECT 1 FROM incidents WHERE src_ip=? AND ts_start < ? AND ts_start >= ? LIMIT 1",
-            (src_ip, ts - 1.0, ts - horizon),
-        ).fetchone()
-        return row is not None
+    def recent_source(self, src_ip: str, ts: float, horizon: float = 86400.0, closed_only: bool = False) -> bool:
+        """Did this source cause an earlier incident in the last 24 h? (severity modifier)
+
+        closed_only: in watch mode an ongoing incident is re-stored every pass and must not
+        count as its own predecessor.
+        """
+        q = "SELECT 1 FROM incidents i WHERE src_ip=? AND ts_start < ? AND ts_start >= ?"
+        if closed_only:
+            q += (" AND (SELECT status FROM incident_status s WHERE s.incident_id = i.incident_id"
+                  " ORDER BY s.id DESC LIMIT 1) = 'closed'")
+        return self.db.execute(q + " LIMIT 1", (src_ip, ts - 1.0, ts - horizon)).fetchone() is not None
+
+    def open_incidents(self) -> list[dict]:
+        rows = self.db.execute(
+            """SELECT body FROM incidents i WHERE COALESCE((SELECT status FROM incident_status s
+                 WHERE s.incident_id = i.incident_id ORDER BY s.id DESC LIMIT 1), 'open') != 'closed'"""
+        ).fetchall()
+        return [json.loads(r["body"]) for r in rows]
 
     def incidents(self, limit: int = 200) -> list[dict]:
         rows = self.db.execute(
-            """SELECT i.body AS incident, n.body AS narrative, n.validation_passed, n.source, n.reasons
+            """SELECT i.body AS incident, n.body AS narrative, n.validation_passed, n.source, n.reasons,
+                      n.template, n.latency_ms,
+                      (SELECT status FROM incident_status s WHERE s.incident_id = i.incident_id
+                        ORDER BY s.id DESC LIMIT 1) AS status
                FROM incidents i LEFT JOIN narratives n USING (incident_id)
                ORDER BY i.ts_start DESC LIMIT ?""",
             (limit,),
@@ -171,6 +260,9 @@ class Store:
                 "validation_passed": bool(r["validation_passed"]),
                 "narrative_source": r["source"],
                 "validation_reasons": json.loads(r["reasons"]) if r["reasons"] else [],
+                "template": json.loads(r["template"]) if r["template"] else None,
+                "latency_ms": r["latency_ms"],
+                "status": r["status"] or "open",
             }
             for r in rows
         ]
@@ -188,12 +280,14 @@ class Store:
         return [dict(r) for r in rows]
 
     def audit(self, limit: int = 500) -> list[dict]:
-        """Every human touch on a command, newest first: views and decisions."""
+        """Every human (and system) touch, newest first: command views, decisions, status changes."""
         rows = self.db.execute(
             """SELECT viewed_at AS at, incident_id, viewer, 'viewed command' AS action, '' AS note
                  FROM command_views
                UNION ALL
                SELECT decided_at, incident_id, viewer, decision, note FROM approvals
+               UNION ALL
+               SELECT at, incident_id, viewer, 'status: ' || status, note FROM incident_status
                ORDER BY at DESC LIMIT ?""",
             (limit,),
         ).fetchall()

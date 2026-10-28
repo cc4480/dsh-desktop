@@ -53,6 +53,60 @@ class DnsQuery(BaseModel):
     query: str  # sanitised; used only to compute numeric features, never sent to the LLM
 
 
+class TlsSession(BaseModel):
+    """ssl.log, typed. JA3/JA4 appear only when Zeek runs the ja3/ja4 packages."""
+
+    ts: float
+    uid: str
+    src_ip: str
+    dst_ip: str
+    dst_port: int
+    version: str = ""
+    server_name: str = ""  # sanitised hostname; never sent to the LLM
+    established: bool = False
+    validation_status: str = "unknown"  # ok | self_signed | expired | untrusted | other | unknown
+    ja3: str = ""
+    ja4: str = ""
+
+
+class HttpRequest(BaseModel):
+    """http.log reduced to numbers and enums. No URI, User-Agent or body text survives."""
+
+    ts: float
+    uid: str
+    src_ip: str
+    dst_ip: str
+    dst_port: int
+    method: str = "OTHER"
+    status_code: int = 0
+    uri_len: int = 0
+    uri_hash: str = ""  # sha1 prefix of the URI, to count distinct paths without keeping them
+    ua_category: str = "other"  # browser | cli | scanner | empty | other
+    request_body_len: int = 0
+    response_body_len: int = 0
+
+
+class Notice(BaseModel):
+    """notice.log / weird.log entry: Zeek's own detections and protocol anomalies."""
+
+    ts: float
+    kind: Literal["notice", "weird"]
+    name: str  # e.g. SSH::Password_Guessing, bad_TCP_checksum
+    src_ip: str | None = None
+    dst_ip: str | None = None
+
+
+class SensorHealth(BaseModel):
+    """capture_loss.log + stats.log: is the sensor seeing everything?"""
+
+    capture_loss_pct: float | None = None
+    pkts_proc: int = 0
+    pkts_dropped: int = 0
+    notices: int = 0
+    weirds: int = 0
+    logs_present: list[str] = Field(default_factory=list)
+
+
 class Alert(BaseModel):
     """A detection on a window of flows, before correlation."""
 
@@ -99,7 +153,10 @@ class Incident(BaseModel):
     asset_criticality: int | None = None
     direction: Literal["inbound", "outbound", "internal", "external"] = "inbound"
     evidence: dict[str, float | int | str | bool] = Field(default_factory=dict)
-    status: Literal["open", "closed"] = "open"
+    status: Literal["open", "acknowledged", "closed"] = "open"
+    campaign_id: str | None = None
+    # BPF filter, time range and Community IDs for pulling the packets (UI/forensics only).
+    forensics: dict[str, str | float | list[str]] = Field(default_factory=dict)
     # [[t, pps], ...] for the dashboard chart. UI only: never part of the LLM evidence.
     timeline: list[list[float]] = Field(default_factory=list)
 

@@ -8,9 +8,12 @@ Protocol, in order:
   3. temporal split: train Mon-Wed, validate Thu, test Fri
   4. drop identifier columns (Flow ID, IPs, ports, timestamp): in a lab capture they are the label
   5. fit all preprocessing and the calibrator on train / validation only
-  6. headline = the deployable feature set (no payload-byte features, which a live sensor
-     cannot reproduce the same way); also report the all-feature model and the naive
-     random-split model so the leak is quantified, not hidden
+  6. three feature sets, each reported:
+       zeek        exactly what nids/supervised.py computes from conn.log; saved as
+                   models/supervised.joblib, the model the live pipeline loads
+       deployable  all features except payload-byte ones (the blueprint's headline set)
+       all         every feature, for the size of the deployability cost
+     plus the naive random-split model, so the leak is quantified, not hidden
 
 The task is binary (benign vs attack): Friday's attacks (PortScan, DDoS, Bot) do not
 appear in Mon-Wed, so a multi-class model cannot be honestly tested on them.
@@ -22,12 +25,17 @@ import json
 import re
 from pathlib import Path
 
+import sys
+
 import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.frozen import FrozenEstimator
 from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score
 from sklearn.model_selection import train_test_split
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from nids.supervised import ZEEK_CIC_FEATURES  # noqa: E402
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"]
 SPLIT = {"train": ["monday", "tuesday", "wednesday"], "val": ["thursday"], "test": ["friday"]}
@@ -62,7 +70,9 @@ def dedupe(df: pd.DataFrame) -> tuple[pd.DataFrame, int]:
     return df, before - len(df)
 
 
-def feature_columns(df: pd.DataFrame, deployable: bool) -> list[str]:
+def feature_columns(df: pd.DataFrame, deployable: bool, zeek: bool = False) -> list[str]:
+    if zeek:  # exactly what the live Zeek adapter produces, in its order
+        return [c for c in ZEEK_CIC_FEATURES if c in df.columns]
     cols = []
     for c in df.columns:
         if c.startswith("__") or c == "Label" or c.lower() in ID_COLUMNS:
@@ -115,8 +125,8 @@ def per_class_recall(df: pd.DataFrame, p: np.ndarray, threshold: float = 0.5) ->
     return out
 
 
-def temporal(df: pd.DataFrame, deployable: bool, seed: int = 42) -> tuple[dict, object, list[str]]:
-    cols = feature_columns(df, deployable)
+def temporal(df: pd.DataFrame, deployable: bool, seed: int = 42, zeek: bool = False) -> tuple[dict, object, list[str]]:
+    cols = feature_columns(df, deployable, zeek)
     parts = {k: df[df["__day"].isin(v)] for k, v in SPLIT.items()}
     model = make_model(seed)
     model.fit(clean(parts["train"][cols]), parts["train"]["__y"])
@@ -157,6 +167,7 @@ def main(argv: list[str] | None = None) -> None:
         "duplicate_fraction": round(n_dup / len(raw), 4),
         "split": SPLIT,
     }
+    report["zeek_temporal"], zeek_model, zeek_cols = temporal(df, deployable=True, zeek=True)
     report["deployable_temporal"], model, cols = temporal(df, deployable=True)
     report["all_features_temporal"], _, _ = temporal(df, deployable=False)
     if not a.skip_naive:
@@ -168,6 +179,8 @@ def main(argv: list[str] | None = None) -> None:
     import joblib
 
     joblib.dump({"model": model, "features": cols}, a.out / "supervised_deployable.joblib")
+    # The live pipeline loads this one (nids/supervised.py refuses any other feature set).
+    joblib.dump({"model": zeek_model, "features": zeek_cols}, a.out / "supervised.joblib")
     (a.out / "supervised_report.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 

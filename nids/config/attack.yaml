@@ -1,0 +1,42 @@
+# Local ATT&CK reference for the explanation layer's trusted <CONTEXT> block.
+# Short descriptions written for this project; see attack.mitre.org for the full entries.
+T1498.001:
+  name: "Network Denial of Service: Direct Network Flood"
+  tactic: Impact
+  summary: "Overwhelms a target with traffic sent directly at it, exhausting bandwidth or connection state so legitimate users cannot be served."
+T1046:
+  name: Network Service Discovery
+  tactic: Discovery
+  summary: "Probes a host for listening services, usually as reconnaissance before exploitation. Open ports found this way are what an attacker targets next."
+T1018:
+  name: Remote System Discovery
+  tactic: Discovery
+  summary: "Enumerates which hosts exist on a network, typically by sweeping many addresses on one port."
+T1048:
+  name: Exfiltration Over Alternative Protocol
+  tactic: Exfiltration
+  summary: "Moves data out over a channel other than the main command-and-control channel, such as DNS queries or a separate bulk transfer."
+T1071:
+  name: Application Layer Protocol
+  tactic: Command and Control
+  summary: "Command-and-control traffic blended into an ordinary application protocol; regular check-ins (beaconing) are a common giveaway."
+T1071.001:
+  name: "Application Layer Protocol: Web Protocols"
+  tactic: Command and Control
+  summary: "Command-and-control over HTTP or HTTPS. An unfamiliar client fingerprint can indicate tooling that is not normal software on the host."
+T1110:
+  name: Brute Force
+  tactic: Credential Access
+  summary: "Repeatedly tries credentials against a login service. The danger is the one attempt that succeeds."
+T1595.002:
+  name: "Active Scanning: Vulnerability Scanning"
+  tactic: Reconnaissance
+  summary: "Runs an automated scanner against a service to find known weaknesses."
+T1595.003:
+  name: "Active Scanning: Wordlist Scanning"
+  tactic: Reconnaissance
+  summary: "Requests many guessed paths from a web server to discover hidden content such as admin pages or backups."
+T1573:
+  name: Encrypted Channel
+  tactic: Command and Control
+  summary: "Hides command-and-control in encryption. Self-signed certificates on repeated connections are weak evidence alone but meaningful alongside beaconing."

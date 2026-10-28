@@ -2,3 +2,5 @@
 pytest==9.2.0
 # M2 (optional): falls back to sklearn HistGradientBoosting if absent
 # xgboost
+# forensics test (skipped without it, or without tshark/tcpdump)
+scapy==2.8.0
