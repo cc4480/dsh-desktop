@@ -180,7 +180,9 @@
   allowed_intents: [enable_verbose_logging, isolate_host, no_action]
 
 - id: NEW_TLS_FINGERPRINT
-  # Needs a profile and a sensor that computes JA3/JA4 (zkg install ja3 / ja4).
+  # Needs a profile and a sensor that computes JA4 (the Docker lab's sensor image installs
+  # zeek/foxio/ja4). JA3 is a fallback only: Chrome randomises extension order, so its
+  # JA3 changes per connection while JA4 does not.
   source: tls
   group_by: [src_ip, dst_ip, dst_port]
   window: 900

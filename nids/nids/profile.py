@@ -39,10 +39,22 @@ class Profile:
         return max(self.hourly_bytes_out.get(src, 0.0), BYTES_FLOOR)
 
     def is_new_fingerprint(self, ja3: str, ja4: str) -> bool | None:
-        """None when the sensor produced no fingerprint at all (package not loaded)."""
-        if not ja3 and not ja4:
-            return None
-        return (bool(ja3) and ja3 not in self.ja3_seen) or (bool(ja4) and ja4 not in self.ja4_seen)
+        """Has this TLS client fingerprint been seen in the baseline?
+
+        JA4 wins whenever the sensor emits it. JA3 hashes the client's extension order,
+        and Chrome (since version 110) randomises that order per connection, so one
+        browser yields many JA3s and "unseen JA3" fires on ordinary browsing. JA4 sorts
+        the extensions first and stays stable. JA3 is only a fallback for sensors that
+        run the JA3 package alone.
+
+        None means "cannot say": the sensor computes no fingerprint, or the baseline was
+        captured without one (so every live fingerprint would look new).
+        """
+        if ja4:
+            return ja4 not in self.ja4_seen if self.ja4_seen else None
+        if ja3:
+            return ja3 not in self.ja3_seen if self.ja3_seen else None
+        return None
 
     # ------------------------------------------------------------ persistence
     def save(self, path: str | Path) -> None:

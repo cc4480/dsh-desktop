@@ -7,7 +7,8 @@
 #   172.28.0.66   attacker poisoned UA, SYN flood, port scan, SSH brute force, wordlist scan
 #                                                                       (profile: attack)
 #   172.28.0.60   implant  C2 beacon, DNS tunnel, bulk upload          (profile: attack)
-#   sensor        Zeek inside the target's network namespace, so it sees all target traffic
+#   sensor        Zeek (with JA4/JA3 fingerprinting) inside the target's network namespace,
+#                 so it sees all target traffic
 #   recorder      tcpdump, headers only (snaplen 128), for `python -m nids pcap`
 name: nids-lab
 
@@ -24,7 +25,7 @@ services:
     networks: {lab: {ipv4_address: 172.28.0.10}}
 
   sensor:
-    image: zeek/zeek:lts
+    build: ./sensor          # zeek/zeek:lts + JA4 and JA3 packages (lab/sensor/Dockerfile)
     network_mode: "service:target"
     depends_on: [target]
     cap_add: [NET_RAW, NET_ADMIN]

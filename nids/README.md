@@ -18,7 +18,7 @@ python -m nids run data/lab/demo --fresh   # detect -> correlate -> explain -> r
 python -m nids evaluate data/lab/demo      # each engine and the ensemble, against ground truth
 python -m nids add-user alice --role approver   # dashboard login (analyst | approver)
 streamlit run dashboard/app.py             # http://127.0.0.1:8501
-python -m pytest -q                        # 58 tests, incl. the prompt-injection suite
+python -m pytest -q                        # 62 tests, incl. the prompt-injection suite
 ```
 
 `NIDS_DASHBOARD_PASSWORD=change-me scripts/demo.sh` runs the whole demo with a shared
@@ -87,7 +87,7 @@ internet.
 | Container | Address | Role |
 |---|---|---|
 | target | 172.28.0.10 | nginx :80, :443 (self-signed), sshd :22, dnsmasq :53, upload sink :9000 |
-| sensor | (target's namespace) | `zeek -i eth0`, JSON logs to `data/lab-docker/<mode>/` |
+| sensor | (target's namespace) | `zeek -i eth0` with **JA4 and JA3** packages and Community IDs (`lab/sensor/Dockerfile`), JSON logs to `data/lab-docker/<mode>/` |
 | recorder | (target's namespace) | `tcpdump -s 128` → `capture.pcap`, for `nids pcap` |
 | client | 172.28.0.100 | always-on benign web and DNS traffic |
 | attacker | 172.28.0.66 | poisoned UA, `hping3` SYN flood, `nmap -sS`, 40 SSH password guesses, gobuster-style wordlist scan |
@@ -102,6 +102,30 @@ python -m nids run data/lab-docker/attack --fresh $LAB
 python -m nids evaluate data/lab-docker/attack $LAB
 python -m nids pcap <INCIDENT-ID> --pcap data/lab-docker/attack/capture.pcap
 ```
+
+#### TLS fingerprints (JA4 / JA3)
+
+`lab/sensor/Dockerfile` builds the sensor from `zeek/zeek:lts` plus two packages:
+- **`zeek/foxio/ja4`**, a compiled plugin, adds `ja4` (and the JA4+ variants) to ssl.log.
+- **`zeek/salesforce/ja3`** adds `ja3`.
+
+Both are pinned to the commits this project was checked against. The image also loads
+Community ID logging and Zeek's SSH brute-force detector, and fails the build if the
+scripts don't load. `scripts/zeek_from_pcap.sh` uses the same image.
+
+The rules use **JA4**. Chrome randomises TLS extension order on every connection, so its
+JA3 changes each time, while JA4 sorts the extensions first and stays stable. JA3 is only
+a fallback for sensors without JA4. On the synthetic traffic, a JA3-only profile marks
+over 99% of ordinary browser sessions as "never seen", while JA4 marks none
+(`test_a_ja3_only_sensor_would_flag_ordinary_browsing`). If the baseline was captured
+without fingerprints, the rule says "can't tell" instead of "everything is new".
+
+The JA3 package is archived upstream (May 2025). If a future Zeek stops loading it, build
+with `--build-arg WITH_JA3=false`; the JA4 package does not emit JA3.
+
+Licensing: the JA4 client fingerprint is BSD-3, like JA3. The JA4+ fields the package
+also writes (`ja4s`, `ja4h`, `ja4x`, …) are under the FoxIO License 1.1. That's fine for
+academic and internal use; selling a product built on them needs an OEM licence.
 
 **The Docker lab has not been run yet:** there was no Docker daemon where it was written.
 The compose file and scripts were syntax-checked, and the ground-truth format is tested.
@@ -171,17 +195,17 @@ without one the study runs A against B.
 
 ## Results on the synthetic demo capture
 
-The demo capture is 15 minutes: 46,882 flows (~3.4k pps average, 12,450 pps peak), plus
-2,519 HTTP requests and 7,471 TLS sessions. It was generated with a different seed and
+The demo capture is 15 minutes: 47,016 flows (~3.3k pps average, 12,450 pps peak), plus
+2,550 HTTP requests and 7,465 TLS sessions. It was generated with a different seed and
 day than the baseline. The first 60 s and an admin's long legitimate SSH session are
 negative controls. From `python -m nids evaluate data/lab/demo`:
 
 | Config | Episodes detected | False incidents | ATT&CK correct | Latency p50 / max (s) | Flow P / R | PR-AUC |
 |---|---|---|---|---|---|---|
-| rules + profile | 8/8 | 0 | 8/8 | 16 / 660 | 1.00 / 1.00 | — |
-| anomaly (IF + AE) | 4/8 | 0 | 0/4 | 0.2 / 889 | 0.99 / 0.98 | 0.995 |
+| rules + profile | 8/8 | 0 | 8/8 | 17 / 434 | 1.00 / 1.00 | — |
+| anomaly (IF + AE) | 4/8 | 0 | 0/4 | 0.2 / 601 | 0.99 / 0.98 | 0.992 |
 | supervised | not run: no CIC-IDS2017 model trained here | | | | | |
-| **ensemble** | **8/8** | **0** | **8/8** | 16 / 660 | 1.00 / 1.00 | — |
+| **ensemble** | **8/8** | **0** | **8/8** | 16 / 434 | 1.00 / 1.00 | — |
 
 | Episode | Incidents | Severity | Latency | Note |
 |---|---|---|---|---|
@@ -189,10 +213,10 @@ negative controls. From `python -m nids evaluate data/lab/demo`:
 | Port scan | 1 | critical | 0.1 s | |
 | Allowlisted scanner | 1 | informational | 0.2 s | gets `no_action` |
 | Web wordlist scan | 2 | critical | 0.5 s | wordlist + scanner-UA, linked as one campaign |
-| SSH brute force | 1 | critical | 31 s | conn rule + Zeek notice, merged |
+| SSH brute force | 1 | critical | 32 s | conn rule + Zeek notice, merged |
 | DNS tunnel | 1 | medium | 58 s | |
-| HTTPS beacon | 3 | medium, low | 245 s | beacon + self-signed TLS + unseen JA3, linked as one campaign |
-| Bulk upload, new destination | 1 | medium | 660 s | Zeek logs a connection only when it ends |
+| HTTPS beacon | 3 | medium, low | 244 s | beacon + self-signed TLS + unseen JA4, linked as one campaign |
+| Bulk upload, new destination | 1 | medium | 434 s | Zeek logs a connection only when it ends |
 
 What the tables show:
 - **The anomaly engine alone misses DNS tunnelling, brute force, the wordlist scan and
@@ -202,10 +226,10 @@ What the tables show:
 - **The ensemble is the only setup that gets everything.**
 
 Other measurements:
-- **About 0.7% of benign flows score above the 0.99 percentile (139 here),** less than
+- **About 0.7% of benign flows score above the 0.99 percentile (153 here),** less than
   the 1% one detector alone gives, because the two detectors must agree. Incident
   formation keeps all of them out of the feed.
-- **Background PSI stays below 0.003, while all-traffic PSI reaches 3.05** because of the
+- **Background PSI stays below 0.003, while all-traffic PSI reaches 2.96** because of the
   attacks. That's why the dashboard plots background PSI.
 
 These numbers show the plumbing works. They don't show detection quality: the traffic is
@@ -262,8 +286,9 @@ Docker lab (M0) and CIC-IDS2017 (M2).
 3. **M3:** `--backend ollama` with `llama3.1:8b`. Record the validation pass rate and p99
    latency; `gpt-4o-mini` can serve as the reference.
 4. **M5:** run the study with ≥ 8 analysts, then `python -m nids study-report`.
-5. **JA3/JA4:** install the Zeek packages (`zkg install ja3`, or ja4) to activate
-   `NEW_TLS_FINGERPRINT` on real traffic.
+5. **JA4/JA3:** the sensor image installs both packages, but it has not been built here.
+   Zeek isn't available in this environment, and compiling it from source was not
+   permitted. Check that ssl.log carries `ja4` after the first lab run.
 6. **Demo safety net:** record a backup video of the demo (blueprint §8).
 
 ## Honest limitations
