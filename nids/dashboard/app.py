@@ -147,7 +147,7 @@ def banner() -> None:
                 x="time:T", tooltip=["incident", "time:T"],
                 color=alt.Color("severity:N", scale=alt.Scale(domain=list(SEV_COLOUR), range=list(SEV_COLOUR.values())),
                                 legend=alt.Legend(orient="top", title=None)))
-        st.altair_chart(chart.properties(height=150), use_container_width=True)
+        st.altair_chart(chart.properties(height=150), width="stretch")
     live = (f"**LIVE** · pass {stats['passes']} · log time {ts(stats['log_time'])} · " if stats.get("live") else "")
     st.caption(f"{live}Last update {ts(run['started_at'])} on `{Path(run['source']).parent.name}` · "
                f"engines {stats.get('engines', {})} · vertical lines = incident detection time")
@@ -167,7 +167,7 @@ def timeline_chart(i: dict) -> None:
     if i.get("detected_at"):
         det = pd.DataFrame({"time": to_dt([i["detected_at"]]), "label": ["detected"]})
         chart += alt.Chart(det).mark_rule(strokeDash=[4, 3]).encode(x="time:T", tooltip=["label", "time:T"])
-    st.altair_chart(chart.properties(height=160), use_container_width=True)
+    st.altair_chart(chart.properties(height=160), width="stretch")
 
 
 def decision_badge(incident_id: str) -> str:
@@ -337,7 +337,7 @@ def psi_chart(values: dict[str, float]) -> pd.DataFrame:
                                                      range=["#43a047", "#f9a825", "#c62828"])),
         tooltip=["feature", alt.Tooltip("psi:Q", format=".4f"), "status"])
     guides = alt.Chart(pd.DataFrame({"x": [PSI_MODERATE, PSI_DRIFT]})).mark_rule(strokeDash=[4, 3]).encode(x="x:Q")
-    st.altair_chart((bars + guides).properties(height=24 * len(df)), use_container_width=True)
+    st.altair_chart((bars + guides).properties(height=24 * len(df)), width="stretch")
     return df
 
 
@@ -412,7 +412,7 @@ def model_tab() -> None:
         st.altair_chart(alt.Chart(df).mark_bar().encode(
             x=alt.X("time:T", title=None),
             y=alt.Y("anomalous flows:Q", scale=alt.Scale(type="symlog"))).properties(height=150),
-            use_container_width=True)
+            width="stretch")
     runs = store.runs()
     if len(runs) > 1:
         st.subheader("Run history")
@@ -421,7 +421,7 @@ def model_tab() -> None:
             "alerts": r["alerts"], "incidents": r["incidents"],
             "watchlist": r["stats"].get("anomaly_watchlist"),
             "max background PSI": max(((r["stats"].get("psi") or {}).get("background") or {"-": 0}).values()),
-        } for r in runs]), hide_index=True, use_container_width=True)
+        } for r in runs]), hide_index=True, width="stretch")
 
 
 # --------------------------------------------------------------------------- evaluation
@@ -457,7 +457,7 @@ def evaluation_tab() -> None:
             "flow recall": fl.get("recall"),
             "flow PR-AUC": fl.get("pr_auc"),
         })
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
     sup = r.get("supervised") or {}
     if "status" in sup:
         st.caption(f"supervised model: {sup['status']} — {sup['reason']}")
@@ -474,7 +474,7 @@ def evaluation_tab() -> None:
             "incidents": e["incidents"], "severity": ", ".join(e["severity"]),
             "severity as expected": e["severity_as_expected"], "ATT&CK": ", ".join(e["attack_ids"]),
             "latency (s)": e["latency_s"],
-        } for e in ens["per_episode"]]), hide_index=True, use_container_width=True)
+        } for e in ens["per_episode"]]), hide_index=True, width="stretch")
         if ens.get("false_incident_examples"):
             st.warning("False incidents: " + "; ".join(
                 f"{x['src']} → {x['dst']} ({x['attack_type']}, {x['severity']})" for x in ens["false_incident_examples"]))
@@ -492,7 +492,7 @@ def evaluation_tab() -> None:
             color=alt.Color("recall:Q", scale=alt.Scale(domain=[0, 1], scheme="redyellowgreen"), legend=None),
             tooltip=["engine", "episode", "recall"])
         text = base.mark_text(fontWeight="bold").encode(text=alt.Text("recall:Q", format=".2f"))
-        st.altair_chart((heat + text).properties(height=44 * df["engine"].nunique()), use_container_width=True)
+        st.altair_chart((heat + text).properties(height=44 * df["engine"].nunique()), width="stretch")
     st.caption("Latency = first packet of the episode to the first moment the detection logic could fire; "
                "excludes Zeek's own connection-logging delay and, in watch mode, the pass interval.")
 
@@ -563,7 +563,7 @@ def audit_tab() -> None:
         return
     df = pd.DataFrame(rows)
     df["at"] = to_dt(df["at"])
-    st.dataframe(df[["at", "viewer", "action", "incident_id", "note"]], hide_index=True, use_container_width=True)
+    st.dataframe(df[["at", "viewer", "action", "incident_id", "note"]], hide_index=True, width="stretch")
     st.download_button("Download audit log (CSV)", df.to_csv(index=False), "nids-audit.csv", "text/csv")
 
 

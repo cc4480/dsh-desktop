@@ -10,7 +10,13 @@
 # Licensing: the JA4 client fingerprint is BSD-3. The package also emits JA4+
 # fields (ja4s, ja4h, ja4x, ...) under the FoxIO License 1.1: free for academic and
 # internal use, but monetising them needs an OEM licence from FoxIO.
-ARG ZEEK_IMAGE=zeek/zeek:lts
+# Pinned to an exact Zeek release, not the floating `lts` tag: the JA4 plugin is compiled
+# against Zeek's headers, so a silent major-version jump could break the build.
+# 9.0 is the current long-term-support line (released 2026-09-17, about a year of fixes).
+# JA4's own CI tests Zeek 8.0; a read of its source found nothing Zeek 9.0 removed. If the
+# plugin fails to build or load on 9.0, use the previous LTS (supported until Zeek 9.1):
+#   docker build --build-arg ZEEK_IMAGE=zeek/zeek:8.0.11 lab/sensor
+ARG ZEEK_IMAGE=zeek/zeek:9.0.1
 FROM ${ZEEK_IMAGE}
 
 # Pinned to the commit this project was checked against.

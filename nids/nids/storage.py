@@ -117,6 +117,21 @@ class Store:
         self.db.executescript(SCHEMA)
         self._migrate()
 
+    def close(self) -> None:
+        self.db.close()
+
+    def __enter__(self) -> "Store":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+    def __del__(self) -> None:  # last resort for callers that never close explicitly
+        try:
+            self.db.close()
+        except Exception:
+            pass
+
     def _migrate(self) -> None:
         """Additive column migrations, so an existing database keeps working."""
         cols = {r["name"] for r in self.db.execute("PRAGMA table_info(narratives)")}

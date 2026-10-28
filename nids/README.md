@@ -59,8 +59,17 @@ The model receives a strict JSON schema (Ollama ≥ 0.5 constrains decoding to i
 - the authoritative `<CLASSIFICATION>`;
 - typed `<EVIDENCE>` only.
 
+**Model choice is open.** `llama3.1:8b` (July 2024) is only the default tag. Newer small
+open models exist (the Qwen3 and Gemma families are the usual suggestions for schema-
+constrained JSON). The tie-breaker for this project is the validator's pass rate, so
+run `run --backend ollama --model <tag>` with two or three candidates and keep the one
+with the highest pass rate at acceptable p99 latency. Model availability couldn't be
+checked from here (ollama.com was unreachable).
+
 `--backend openai` works with any OpenAI-compatible endpoint (`OPENAI_API_KEY`,
-`OPENAI_BASE_URL`). Before anything is sent, internal IPs and asset names become stable
+`OPENAI_BASE_URL`). If you use OpenAI itself, check its deprecations page first.
+Secondary sources report that `gpt-4o-mini` leaves the API on 2027-01-14; the official
+page couldn't be reached from here. Before anything is sent, internal IPs and asset names become stable
 placeholders, and every payload sent is logged in `egress_log`. Narratives are cached by
 fingerprint for 7 days, and round-trip latency is recorded (p50/p99 in the dashboard).
 
@@ -78,6 +87,14 @@ plus the naive random split, so the leak is quantified.
 can compute from Zeek's conn.log (11 of 78). The pipeline loads it automatically and
 refuses a model trained on anything else.
 
+**Dataset quality.** The original CIC-IDS2017 release has documented errors. Engelen et
+al. (2021) and Liu et al. (2022) found more than 20% of flows were artefacts, and about
+10% were mislabelled. They regenerated and relabelled the dataset from the original pcaps
+and published the corrected version. Prefer that version. The trainer has only been tested
+against the original CSV layout, so check its column names and labels (the corrected
+version marks failed attacks as "Attempted") before training. Either way, report which
+version you used.
+
 ### Docker lab (M0)
 
 `lab/` is an isolated lab with real TCP/IP stacks. The attack scripts write their own
@@ -90,7 +107,7 @@ internet.
 | sensor | (target's namespace) | `zeek -i eth0` with the **JA4** package and Community IDs (`lab/sensor/Dockerfile`), JSON logs to `data/lab-docker/<mode>/` |
 | recorder | (target's namespace) | `tcpdump -s 128` → `capture.pcap`, for `nids pcap` |
 | client | 172.28.0.100 | always-on benign web and DNS traffic |
-| attacker | 172.28.0.66 | poisoned UA, `hping3` SYN flood, `nmap -sS`, 40 SSH password guesses, gobuster-style wordlist scan |
+| attacker | 172.28.0.66 | poisoned UA, `hping3` SYN flood (upstream inactive since 2005, still packaged by Debian), `nmap -sS`, 40 SSH password guesses, gobuster-style wordlist scan |
 | implant | 172.28.0.60 | 60 s HTTPS beacon, DNS tunnel, 3 × 200 MB upload |
 
 ```bash
@@ -105,7 +122,12 @@ python -m nids pcap <INCIDENT-ID> --pcap data/lab-docker/attack/capture.pcap
 
 #### TLS fingerprints (JA4)
 
-`lab/sensor/Dockerfile` builds the sensor from `zeek/zeek:lts` plus **`zeek/foxio/ja4`**.
+`lab/sensor/Dockerfile` builds the sensor from **`zeek/zeek:9.0.1`** plus **`zeek/foxio/ja4`**.
+The image is pinned to an exact release, not the floating `lts` tag, because the JA4 plugin
+is compiled against Zeek and `lts` moved from 8.0 to 9.0 on 2026-09-17. JA4's own CI tests
+Zeek 8.0; reading its source turned up nothing Zeek 9.0 removed. If the plugin fails on
+9.0, build with `--build-arg ZEEK_IMAGE=zeek/zeek:8.0.11`, the previous LTS, which is
+supported until Zeek 9.1 ships.
 That compiled plugin is actively maintained by FoxIO and adds `ja4` (and the JA4+
 variants) to ssl.log. It is pinned to the commit this project was checked against. The
 image also loads Community ID logging and Zeek's SSH brute-force detector, and fails the
@@ -286,8 +308,8 @@ Docker lab (M0) and CIC-IDS2017 (M2).
    and re-run on a fresh capture.
 2. **M2:** `python ml/train_supervised.py --data <CIC-IDS2017 dir>`, then re-run
    `evaluate` so the supervised row and the naive-vs-honest gap are real.
-3. **M3:** `--backend ollama` with `llama3.1:8b`. Record the validation pass rate and p99
-   latency; `gpt-4o-mini` can serve as the reference.
+3. **M3:** `--backend ollama`. Compare two or three current small models on validation
+   pass rate and p99 latency (see "Model choice is open" above).
 4. **M5:** run the study with ≥ 8 analysts, then `python -m nids study-report`.
 5. **JA4:** the sensor image installs the JA4 package, but it has not been built here.
    Zeek isn't available in this environment, and compiling it from source was not

@@ -1,5 +1,6 @@
 """Sensing, response, auth, study, LLM plumbing and the supervised adapter."""
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -280,3 +281,6 @@ def test_sensor_image_installs_ja4_and_not_the_archived_ja3():
     installs = [line for line in dockerfile.splitlines() if "zkg install" in line]
     assert len(installs) == 1 and "zeek/foxio/ja4" in installs[0]
     assert "@load packages" in dockerfile and "community-id-logging" in dockerfile
+    # An exact Zeek release, never the floating tag: the JA4 plugin compiles against it.
+    image = next(line for line in dockerfile.splitlines() if line.startswith("ARG ZEEK_IMAGE="))
+    assert re.fullmatch(r"ARG ZEEK_IMAGE=zeek/zeek:\d+\.\d+\.\d+", image), image
