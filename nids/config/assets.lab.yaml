@@ -1,0 +1,28 @@
+# Asset registry for the Docker lab (lab/docker-compose.yml).
+internal_networks:
+  - 172.28.0.0/24
+
+known_scanners: []
+
+protected_ips:
+  - 172.28.0.1       # bridge gateway
+
+critical_service_ports: [22, 53]
+
+default_criticality: 2
+
+assets:
+  - ip: 172.28.0.10
+    name: web-lab-01
+    service: http
+    owner: lab
+    criticality: 4
+    internet_facing: true
+    environment: production
+  - ip: 172.28.0.100
+    name: client-lab-01
+    service: workstation
+    owner: lab
+    criticality: 2
+    internet_facing: false
+    environment: corporate

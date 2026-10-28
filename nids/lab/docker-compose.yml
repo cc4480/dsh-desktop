@@ -1,0 +1,60 @@
+# M0 lab: isolated network, real TCP/IP stacks, Zeek as the sensor, ground truth written
+# by the attack scripts themselves. Run it through lab/run_lab.sh, not directly.
+#
+#   172.28.0.10   target   nginx :80 (web), :8443 (fake C2), dnsmasq :53, nc sink :9000
+#   172.28.0.100  client   benign web + DNS traffic, always on
+#   172.28.0.66   attacker poisoned UA, SYN flood, port scan          (profile: attack)
+#   172.28.0.60   implant  C2 beacon, DNS tunnel, bulk upload          (profile: attack)
+#   sensor        Zeek inside the target's network namespace, so it sees all target traffic
+name: nids-lab
+
+networks:
+  lab:
+    internal: true          # no route to the internet: attack traffic cannot leave the lab
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+
+services:
+  target:
+    build: ./target
+    networks: {lab: {ipv4_address: 172.28.0.10}}
+
+  sensor:
+    image: zeek/zeek:lts
+    network_mode: "service:target"
+    depends_on: [target]
+    cap_add: [NET_RAW, NET_ADMIN]
+    working_dir: /out
+    volumes: ["${LAB_OUT:?set by run_lab.sh}:/out"]
+    # SIGTERM (docker compose stop) makes Zeek flush every open connection to conn.log.
+    command: ["zeek", "-i", "eth0", "-C", "LogAscii::use_json=T", "local"]
+
+  client:
+    build: ./tools
+    networks: {lab: {ipv4_address: 172.28.0.100}}
+    depends_on: [sensor]
+    command: ["/scripts/benign.sh"]
+
+  attacker:
+    build: ./tools
+    profiles: [attack]
+    networks: {lab: {ipv4_address: 172.28.0.66}}
+    depends_on: [sensor, client]
+    cap_add: [NET_RAW, NET_ADMIN]
+    environment:
+      WARMUP: "${WARMUP:-60}"
+    volumes: ["${LAB_OUT}:/out"]
+    command: ["/scripts/attack.sh"]
+
+  implant:
+    build: ./tools
+    profiles: [attack]
+    networks: {lab: {ipv4_address: 172.28.0.60}}
+    depends_on: [sensor, client]
+    environment:
+      WARMUP: "${WARMUP:-60}"
+      BEACONS: "${BEACONS:-12}"
+      TUNNEL_QUERIES: "${TUNNEL_QUERIES:-150}"
+    volumes: ["${LAB_OUT}:/out"]
+    command: ["/scripts/implant.sh"]

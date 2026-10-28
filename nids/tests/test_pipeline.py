@@ -18,7 +18,9 @@ def test_one_incident_per_attack_episode(lab, anomaly_model, tmp_path):
     assert len(incidents) == 6, [(i.src_ip, i.attack_type) for i in incidents]
     flood = by_src["192.168.1.105"]
     assert flood.rule_ids == ["SYN_FLOOD"] and flood.attack_id == "T1498.001"
-    assert flood.flow_count == 24900 and flood.severity == "critical"
+    # 24,900 SYN flows plus the attacker's poisoned-UA request 1.5 s earlier, which the
+    # hopping window also covers. Overlapping windows must not double-count any of them.
+    assert flood.flow_count == 24901 and flood.severity == "critical"
     assert 12000 <= flood.peak_pps <= 13000
     assert by_src["192.168.1.77"].attack_id == "T1046" and by_src["192.168.1.77"].severity == "critical"
     assert by_src["192.168.1.50"].rule_ids == ["DNS_TUNNELING"]

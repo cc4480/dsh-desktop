@@ -8,7 +8,7 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, field_validator
 
-from nids.features import FEATURE_REGISTRY, conn_window_features, dns_window_features, tumbling_windows
+from nids.features import FEATURE_REGISTRY, conn_window_features, dns_window_features, hopping_windows
 from nids.models import ALLOWED_INTENTS, Alert, DnsQuery, Flow
 
 OPS = {">": operator.gt, ">=": operator.ge, "<": operator.lt, "<=": operator.le, "==": operator.eq}
@@ -78,7 +78,7 @@ def evaluate(rules: Sequence[Rule], flows: Sequence[Flow], dns: Sequence[DnsQuer
     for rule in rules:
         records = flows if rule.source == "conn" else dns
         featurise = conn_window_features if rule.source == "conn" else dns_window_features
-        for key, _start, recs in tumbling_windows(records, rule.group_by, rule.window):
+        for key, start, recs in hopping_windows(records, rule.group_by, rule.window):
             feats = featurise(recs)
             if not all(c.holds(feats) for c in rule.when):
                 continue
@@ -98,6 +98,8 @@ def evaluate(rules: Sequence[Rule], flows: Sequence[Flow], dns: Sequence[DnsQuer
                     dst_ports=ports[:64],
                     flow_count=len(recs),
                     features={k: round(v, 4) for k, v in feats.items()},
+                    emitted_at=start + rule.window,
+                    flow_uids=[r.uid for r in recs],
                 )
             )
     return sorted(alerts, key=lambda a: a.ts_start)

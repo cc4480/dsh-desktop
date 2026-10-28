@@ -50,6 +50,15 @@ CREATE TABLE IF NOT EXISTS command_views (
     viewer TEXT NOT NULL,
     viewed_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS approvals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id TEXT NOT NULL REFERENCES incidents(incident_id),
+    command_id INTEGER REFERENCES rendered_commands(id),
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
+    viewer TEXT NOT NULL,
+    note TEXT NOT NULL,
+    decided_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS llm_cache (
     fingerprint TEXT PRIMARY KEY,
     body TEXT NOT NULL,
@@ -111,6 +120,17 @@ class Store:
                         (incident_id, viewer, time.time()))
         self.db.commit()
 
+    def record_decision(self, incident_id: str, command_id: int | None, decision: str, viewer: str,
+                        note: str = "") -> None:
+        """A human decision on a rendered command. Recording 'approved' executes nothing."""
+        if decision not in ("approved", "rejected"):
+            raise ValueError(f"unknown decision {decision!r}")
+        self.db.execute(
+            "INSERT INTO approvals (incident_id, command_id, decision, viewer, note, decided_at) VALUES (?,?,?,?,?,?)",
+            (incident_id, command_id, decision, viewer[:40], note[:500], time.time()),
+        )
+        self.db.commit()
+
     def log_egress(self, incident_id: str, backend: str, payload: str) -> None:
         self.db.execute("INSERT INTO egress_log (incident_id, backend, payload, sent_at) VALUES (?,?,?,?)",
                         (incident_id, backend, payload, time.time()))
@@ -160,6 +180,28 @@ class Store:
             "SELECT * FROM rendered_commands WHERE incident_id=? ORDER BY id DESC LIMIT 1", (incident_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def decisions(self, incident_id: str) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT * FROM approvals WHERE incident_id=? ORDER BY id DESC", (incident_id,)
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def audit(self, limit: int = 500) -> list[dict]:
+        """Every human touch on a command, newest first: views and decisions."""
+        rows = self.db.execute(
+            """SELECT viewed_at AS at, incident_id, viewer, 'viewed command' AS action, '' AS note
+                 FROM command_views
+               UNION ALL
+               SELECT decided_at, incident_id, viewer, decision, note FROM approvals
+               ORDER BY at DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def runs(self, limit: int = 50) -> list[dict]:
+        rows = self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        return [{**dict(r), "stats": json.loads(r["stats"])} for r in rows]
 
     def last_run(self) -> dict | None:
         row = self.db.execute("SELECT * FROM runs ORDER BY id DESC LIMIT 1").fetchone()

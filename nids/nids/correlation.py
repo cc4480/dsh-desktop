@@ -88,6 +88,7 @@ class Correlator:
         self.recent_sources = recent_sources or (lambda src, ts: False)
         self.anomaly_min_flows = anomaly_min_flows
         self.watchlist = 0  # anomalous flows that did not form or join an incident
+        self.incident_uids: dict[str, set[str]] = {}  # every flow uid an incident's alerts cover
 
     def correlate(self, alerts: Sequence[Alert]) -> list[Incident]:
         open_: dict[tuple, dict] = {}
@@ -153,7 +154,8 @@ class Correlator:
             "ts_start": a.ts_start,
             "ts_end": a.ts_end,
             "alerts": [a],
-            "flow_count": a.flow_count,
+            "uids": set(a.flow_uids),
+            "extra_flows": 0 if a.flow_uids else a.flow_count,
         }
 
     @staticmethod
@@ -162,10 +164,23 @@ class Correlator:
         g["ts_start"] = min(g["ts_start"], a.ts_start)
         g["ts_end"] = max(g["ts_end"], a.ts_end)
         if count_flows:
-            g["flow_count"] += a.flow_count
+            if a.flow_uids:
+                g["uids"].update(a.flow_uids)
+            else:
+                g["extra_flows"] += a.flow_count
+
+    def _detected_at(self, alerts: list[Alert]) -> float:
+        """Earliest moment the incident could have been raised."""
+        rule_times = [a.emitted_at for a in alerts if a.engine != "anomaly"]
+        if rule_times:
+            return min(rule_times)
+        times = sorted(a.emitted_at for a in alerts)  # anomaly-only: needs the k-th flow
+        return times[min(self.anomaly_min_flows, len(times)) - 1]
 
     def _finalise(self, g: dict) -> Incident:
         alerts: list[Alert] = g["alerts"]
+        g["flow_count"] = len(g["uids"]) + g["extra_flows"]
+        self.incident_uids[g["id"]] = set().union(*(a.flow_uids for a in alerts))
         primary = [a for a in alerts if a.engine != "anomaly"] or alerts
         confidence = max(a.confidence for a in primary)
         rule_ids = sorted({a.rule_id for a in alerts if a.rule_id})
@@ -230,6 +245,7 @@ class Correlator:
             incident_id=g["id"],
             ts_start=g["ts_start"],
             ts_end=g["ts_end"],
+            detected_at=self._detected_at(alerts),
             src_ip=g["src_ip"],
             dst_ip=g["dst_ip"],
             attack_type=g["attack_type"],

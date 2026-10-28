@@ -25,14 +25,23 @@ DOMAINS = ["example.com", "example.org", "cdn.example.net", "api.example.io", "m
            "updates.example.org", "static.example.net", "news.example.com"]
 SUBS = ["www", "api", "cdn", "img", "static", "login", "m", "assets"]
 
+# expect: "detect" -> an incident must exist; "informational" -> an incident must exist and
+# be Informational; "ignore" -> not scored (the poisoned UA is covered by test_injection).
 GROUND_TRUTH = [
-    {"attack": "SYN_FLOOD", "src": "192.168.1.105", "dst": "192.168.1.10", "start": 120, "end": 124},
-    {"attack": "HORIZONTAL_PORT_SCAN", "src": "192.168.1.77", "dst": "192.168.1.20", "start": 200, "end": 230},
-    {"attack": "ALLOWLISTED_SCAN", "src": "192.168.1.250", "dst": "192.168.1.30", "start": 300, "end": 310},
-    {"attack": "DNS_TUNNELING", "src": "192.168.1.50", "dst": None, "start": 240, "end": 540},
-    {"attack": "BEACONING", "src": "192.168.1.60", "dst": "198.51.100.77", "start": 0, "end": 900},
-    {"attack": "NOVEL_BULK_UPLOAD", "src": "192.168.1.30", "dst": "203.0.113.200", "start": 600, "end": 660},
-    {"attack": "POISONED_USER_AGENT", "src": "192.168.1.105", "dst": "192.168.1.10", "start": 118, "end": 119},
+    {"attack": "SYN_FLOOD", "src": "192.168.1.105", "dst": "192.168.1.10", "start": 120, "end": 124,
+     "expect": "detect", "attack_id": "T1498.001"},
+    {"attack": "HORIZONTAL_PORT_SCAN", "src": "192.168.1.77", "dst": "192.168.1.20", "start": 200, "end": 230,
+     "expect": "detect", "attack_id": "T1046"},
+    {"attack": "ALLOWLISTED_SCAN", "src": "192.168.1.250", "dst": "192.168.1.30", "start": 300, "end": 310,
+     "expect": "informational", "attack_id": "T1046"},
+    {"attack": "DNS_TUNNELING", "src": "192.168.1.50", "dst": None, "start": 240, "end": 540,
+     "expect": "detect", "attack_id": "T1048"},
+    {"attack": "BEACONING", "src": "192.168.1.60", "dst": "198.51.100.77", "start": 0, "end": 900,
+     "expect": "detect", "attack_id": "T1071"},
+    {"attack": "NOVEL_BULK_UPLOAD", "src": "192.168.1.30", "dst": "203.0.113.200", "start": 600, "end": 660,
+     "expect": "detect", "attack_id": None},
+    {"attack": "POISONED_USER_AGENT", "src": "192.168.1.105", "dst": "192.168.1.10", "start": 118, "end": 119,
+     "expect": "ignore", "attack_id": None},
 ]
 
 INJECTION_UA = (

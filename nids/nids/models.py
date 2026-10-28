@@ -68,6 +68,11 @@ class Alert(BaseModel):
     dst_ports: list[int] = Field(default_factory=list)
     flow_count: int = 1
     features: dict[str, float | int | str] = Field(default_factory=dict)
+    # When the engine could first have raised this alert: window close for rules, flow
+    # end for the anomaly engine. Drives detection-latency measurement.
+    emitted_at: float = 0.0
+    # Zeek uids covered, so overlapping (hopping) windows never double-count flows.
+    flow_uids: list[str] = Field(default_factory=list, exclude=True)
 
 
 class Incident(BaseModel):
@@ -76,6 +81,7 @@ class Incident(BaseModel):
     incident_id: str
     ts_start: float
     ts_end: float
+    detected_at: float = 0.0
     src_ip: str
     dst_ip: str | None
     attack_type: str
@@ -94,6 +100,8 @@ class Incident(BaseModel):
     direction: Literal["inbound", "outbound", "internal", "external"] = "inbound"
     evidence: dict[str, float | int | str | bool] = Field(default_factory=dict)
     status: Literal["open", "closed"] = "open"
+    # [[t, pps], ...] for the dashboard chart. UI only: never part of the LLM evidence.
+    timeline: list[list[float]] = Field(default_factory=list)
 
     @property
     def started_at(self) -> datetime:

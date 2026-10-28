@@ -17,10 +17,13 @@
   group_by: [src_ip, dst_ip]
   window: 10
   correlation_window: 30
+  # The blueprint also required conn_state == S0. On a real stack the target answers
+  # SYN-ACK and the attacker's kernel answers RST, so Zeek reports S0, REJ, RSTOS0 or
+  # similar depending on timing. "Originator never completed the handshake" (syn_ratio)
+  # is the invariant, so that is what the rule tests.
   when:
     - {feature: syn_ratio, op: ">", value: 0.90}
     - {feature: packets_per_second, op: ">", value: 5000}
-    - {feature: s0_ratio, op: ">", value: 0.90}
   confidence: 0.95
   attack_type: "Network Denial of Service: Direct Network Flood"
   attack_id: T1498.001

@@ -12,7 +12,9 @@ anomalous, so the ECDF value itself is the score. Subtracting from 1 would inver
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,6 +28,9 @@ from nids.models import Alert, Flow
 
 ALERT_THRESHOLD = 0.99
 CRITICAL_THRESHOLD = 0.999
+PSI_BINS = 10
+# Conventional PSI reading: < 0.10 stable, 0.10-0.25 moderate shift, > 0.25 significant drift.
+PSI_MODERATE, PSI_DRIFT = 0.10, 0.25
 
 
 @dataclass
@@ -36,6 +41,11 @@ class AnomalyModel:
     calib_scores: np.ndarray  # sorted raw scores of the benign calibration set
     feature_names: list[str]
     feature_registry_version: str
+    # Per-feature reference histogram of the benign calibration set, for drift (PSI).
+    ref_edges: list[np.ndarray] | None = None
+    ref_props: list[np.ndarray] | None = None
+    trained_at: float = 0.0
+    n_train: int = 0
 
     def _scale(self, X: np.ndarray) -> np.ndarray:
         return (X - self.median) / (self.iqr + 1e-9)
@@ -50,6 +60,21 @@ class AnomalyModel:
         r = self.raw(X)
         return np.searchsorted(self.calib_scores, r, side="right") / len(self.calib_scores)
 
+    def psi(self, X: np.ndarray) -> dict[str, float]:
+        """Population stability index of live features against the frozen benign reference.
+
+        This catches distribution change (concept drift); the frozen ECDF only fixes batch
+        composition. Note that an attack in progress also shifts the distribution.
+        """
+        if self.ref_edges is None or self.ref_props is None or len(X) == 0:
+            return {}
+        out = {}
+        for i, name in enumerate(self.feature_names):
+            live = _proportions(X[:, i], self.ref_edges[i])
+            ref = self.ref_props[i]
+            out[name] = round(float(np.sum((live - ref) * np.log(live / ref))), 4)
+        return out
+
     def save(self, path: str | Path) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -57,8 +82,11 @@ class AnomalyModel:
         meta = {
             "feature_names": self.feature_names,
             "feature_registry_version": self.feature_registry_version,
+            "n_train": self.n_train,
             "n_calibration": int(len(self.calib_scores)),
             "threshold": ALERT_THRESHOLD,
+            "trained_at": self.trained_at,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
         path.with_suffix(".json").write_text(json.dumps(meta, indent=2))
 
@@ -69,6 +97,19 @@ class AnomalyModel:
         if model.feature_names != FLOW_FEATURES:
             raise ValueError("model was trained on a different feature set; retrain it")
         return model
+
+
+def _edges(col: np.ndarray) -> np.ndarray:
+    """Quantile bin edges, de-duplicated so binary / heavily tied features still work."""
+    inner = np.unique(np.quantile(col, np.linspace(0, 1, PSI_BINS + 1)[1:-1]))
+    return np.concatenate([[-np.inf], inner, [np.inf]])
+
+
+def _proportions(col: np.ndarray, edges: np.ndarray, eps: float = 1e-4) -> np.ndarray:
+    # Right-closed bins so a tied value (e.g. 0 in a binary feature) falls in one bin.
+    idx = np.searchsorted(edges[1:-1], col, side="left")
+    counts = np.bincount(idx, minlength=len(edges) - 1).astype(float)
+    return np.clip(counts / max(len(col), 1), eps, None)
 
 
 def train(benign: Sequence[Flow], calib_fraction: float = 0.3, seed: int = 42) -> AnomalyModel:
@@ -88,6 +129,10 @@ def train(benign: Sequence[Flow], calib_fraction: float = 0.3, seed: int = 42) -
     forest.fit((X_fit - median) / (iqr + 1e-9))
     model = AnomalyModel(forest, median, iqr, np.empty(0), list(FLOW_FEATURES), FEATURE_REGISTRY_VERSION)
     model.calib_scores = np.sort(model.raw(X_cal))
+    model.ref_edges = [_edges(X_cal[:, i]) for i in range(X.shape[1])]
+    model.ref_props = [_proportions(X_cal[:, i], e) for i, e in enumerate(model.ref_edges)]
+    model.trained_at = time.time()
+    model.n_train = int(len(X_fit))
     return model
 
 
@@ -114,6 +159,8 @@ def detect(model: AnomalyModel, flows: Sequence[Flow], threshold: float = ALERT_
                 dst_ports=[f.dst_port],
                 flow_count=1,
                 features={"anomaly_score": round(float(s), 4), "bytes_out": f.orig_bytes},
+                emitted_at=f.ts + f.duration,
+                flow_uids=[f.uid],
             )
         )
     return alerts

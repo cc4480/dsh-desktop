@@ -153,13 +153,21 @@ def dns_window_features(queries: Sequence[DnsQuery]) -> dict[str, float]:
     }
 
 
-def tumbling_windows(
-    records: Iterable[Flow | DnsQuery], key_fields: Sequence[str], window_s: float
+def hopping_windows(
+    records: Iterable[Flow | DnsQuery], key_fields: Sequence[str], window_s: float, hop_s: float | None = None
 ) -> list[tuple[tuple[str, ...], float, list]]:
-    """Group records into fixed, epoch-aligned windows per key."""
+    """Group records into epoch-aligned windows of window_s that start every hop_s seconds.
+
+    The default hop is half a window, so every burst shorter than window_s / 2 lies whole
+    inside at least one window. Tumbling windows (hop == window) can split an attack across
+    a boundary and leave each half below threshold.
+    """
+    hop = hop_s or window_s / 2
+    per_window = max(1, round(window_s / hop))
     buckets: dict[tuple, list] = defaultdict(list)
     for r in records:
         key = tuple(str(getattr(r, k)) for k in key_fields)
-        bucket = math.floor(r.ts / window_s) * window_s
-        buckets[(key, bucket)].append(r)
+        last = math.floor(r.ts / hop)
+        for n in range(last - per_window + 1, last + 1):
+            buckets[(key, n * hop)].append(r)
     return [(key, start, recs) for (key, start), recs in sorted(buckets.items(), key=lambda kv: kv[0][1])]
