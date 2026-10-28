@@ -1,5 +1,8 @@
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends nginx-light dnsmasq netcat-openbsd \
+# Debian 13 (current stable). Debian 12 left regular security support in June 2026; if a
+# package is missing on 13, build with --build-arg DEBIAN_TAG=bookworm-slim.
+ARG DEBIAN_TAG=trixie-slim
+FROM debian:${DEBIAN_TAG}
+RUN apt-get update && apt-get install -y --no-install-recommends nginx dnsmasq netcat-openbsd \
         openssh-server openssl \
     && rm -rf /var/lib/apt/lists/*
 # Self-signed certificate: the implant's HTTPS beacon presents it (SELF_SIGNED_TLS_REPEATED).

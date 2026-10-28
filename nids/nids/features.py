@@ -70,7 +70,7 @@ FEATURE_REGISTRY: dict[str, FeatureSpec] = {
         # behavioural, need a baseline profile (nids/profile.py)
         FeatureSpec("new_dst_ratio", "ratio", "conn.log+profile", "window"),
         FeatureSpec("bytes_out_vs_baseline", "x baseline", "conn.log+profile", "window"),
-        FeatureSpec("new_ja3_ratio", "ratio", "ssl.log+profile", "window"),
+        FeatureSpec("new_fingerprint_ratio", "ratio", "ssl.log+profile", "window"),
         FeatureSpec("query_count", "count", "dns.log", "window"),
         FeatureSpec("mean_label_length", "chars", "dns.log", "window"),
         FeatureSpec("unique_subdomain_ratio", "ratio", "dns.log", "window"),
@@ -193,10 +193,10 @@ def tls_window_features(sessions: Sequence[TlsSession], profile: Profile | None)
         "self_signed_ratio": sum(t.validation_status == "self_signed" for t in sessions) / n,
     }
     if profile is not None:
-        verdicts = [profile.is_new_fingerprint(t.ja3, t.ja4) for t in sessions]
+        verdicts = [profile.is_new_fingerprint(t.ja4) for t in sessions]
         known = [v for v in verdicts if v is not None]
         if known:  # absent entirely when the sensor computes no fingerprints
-            out["new_ja3_ratio"] = sum(known) / len(known)
+            out["new_fingerprint_ratio"] = sum(known) / len(known)
     return out
 
 

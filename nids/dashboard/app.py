@@ -370,8 +370,8 @@ def model_tab() -> None:
         c = st.columns(4)
         c[0].metric("Hosts", prof.get("hosts", 0))
         c[1].metric("Known destinations", prof.get("destinations", 0))
-        c[2].metric("TLS fingerprints", prof.get("ja3", 0) + prof.get("ja4", 0),
-                    help="0 means the sensor does not compute JA3/JA4 (zkg install ja3 / ja4).")
+        c[2].metric("TLS client fingerprints (JA4)", prof.get("ja4", 0),
+                    help="0 means the sensor does not compute JA4: use the lab sensor image (lab/sensor).")
         c[3].metric("Baseline hours", prof.get("baseline_hours", 0))
     sup = stats.get("supervised") or {}
     if sup:

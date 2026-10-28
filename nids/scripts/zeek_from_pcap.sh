@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Turn a capture into the JSON Zeek logs this pipeline reads, with JA4/JA3 and Community IDs.
+# Turn a capture into the JSON Zeek logs this pipeline reads, with JA4 and Community IDs.
 #   scripts/zeek_from_pcap.sh capture.pcap data/lab/real
-# Builds the lab's sensor image (zeek/zeek:lts + fingerprinting packages) on first use.
+# Builds the lab's sensor image (zeek/zeek:lts + the JA4 package) on first use.
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 pcap=$(realpath "$1"); out=${2:-data/lab/real}

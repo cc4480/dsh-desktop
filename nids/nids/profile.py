@@ -3,7 +3,7 @@
 What a point-wise anomaly score cannot see, a per-host memory can: "this host has
 never talked to that destination", "this host never sends this much", "this TLS client
 fingerprint has never been seen here". Rules consume these as ordinary window features
-(new_dst_ratio, bytes_out_vs_baseline, new_ja3_ratio). A rule that needs a profile
+(new_dst_ratio, bytes_out_vs_baseline, new_fingerprint_ratio). A rule that needs a profile
 feature simply never fires when no profile is loaded.
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ VOLUME_WINDOW = 3600.0
 class Profile:
     known_dsts: dict[str, set[str]] = field(default_factory=dict)  # src -> destinations seen
     hourly_bytes_out: dict[str, float] = field(default_factory=dict)  # src -> max bytes sent per hour
-    ja3_seen: set[str] = field(default_factory=set)
     ja4_seen: set[str] = field(default_factory=set)
     built_at: float = 0.0
     baseline_hours: float = 0.0
@@ -38,23 +37,19 @@ class Profile:
     def bytes_baseline(self, src: str) -> float:
         return max(self.hourly_bytes_out.get(src, 0.0), BYTES_FLOOR)
 
-    def is_new_fingerprint(self, ja3: str, ja4: str) -> bool | None:
-        """Has this TLS client fingerprint been seen in the baseline?
+    def is_new_fingerprint(self, ja4: str) -> bool | None:
+        """Has this TLS client (JA4) fingerprint been seen in the baseline?
 
-        JA4 wins whenever the sensor emits it. JA3 hashes the client's extension order,
-        and Chrome (since version 110) randomises that order per connection, so one
-        browser yields many JA3s and "unseen JA3" fires on ordinary browsing. JA4 sorts
-        the extensions first and stays stable. JA3 is only a fallback for sensors that
-        run the JA3 package alone.
+        JA4 only. JA3 is not used: its upstream is archived, and it hashes the client's
+        extension order, which Chrome (since version 110) randomises per connection, so
+        "unseen JA3" fires on ordinary browsing. JA4 sorts the extensions first.
 
-        None means "cannot say": the sensor computes no fingerprint, or the baseline was
-        captured without one (so every live fingerprint would look new).
+        None means "cannot say": the sensor computes no JA4, or the baseline was captured
+        without one (so every live fingerprint would look new).
         """
-        if ja4:
-            return ja4 not in self.ja4_seen if self.ja4_seen else None
-        if ja3:
-            return ja3 not in self.ja3_seen if self.ja3_seen else None
-        return None
+        if not ja4 or not self.ja4_seen:
+            return None
+        return ja4 not in self.ja4_seen
 
     # ------------------------------------------------------------ persistence
     def save(self, path: str | Path) -> None:
@@ -63,7 +58,6 @@ class Profile:
         path.write_text(json.dumps({
             "known_dsts": {k: sorted(v) for k, v in self.known_dsts.items()},
             "hourly_bytes_out": self.hourly_bytes_out,
-            "ja3_seen": sorted(self.ja3_seen),
             "ja4_seen": sorted(self.ja4_seen),
             "built_at": self.built_at,
             "baseline_hours": self.baseline_hours,
@@ -76,7 +70,6 @@ class Profile:
         return Profile(
             known_dsts={k: set(v) for k, v in raw["known_dsts"].items()},
             hourly_bytes_out={k: float(v) for k, v in raw["hourly_bytes_out"].items()},
-            ja3_seen=set(raw.get("ja3_seen", [])),
             ja4_seen=set(raw.get("ja4_seen", [])),
             built_at=raw.get("built_at", 0.0),
             baseline_hours=raw.get("baseline_hours", 0.0),
@@ -85,7 +78,7 @@ class Profile:
 
     def summary(self) -> dict:
         return {"hosts": len(self.known_dsts), "destinations": len(set().union(*self.known_dsts.values()))
-                if self.known_dsts else 0, "ja3": len(self.ja3_seen), "ja4": len(self.ja4_seen),
+                if self.known_dsts else 0, "ja4": len(self.ja4_seen),
                 "baseline_hours": round(self.baseline_hours, 2), "built_at": self.built_at}
 
 
@@ -100,8 +93,6 @@ def build(bundle: LogBundle) -> Profile:
     for (src, _), b in per_hour.items():
         p.hourly_bytes_out[src] = max(p.hourly_bytes_out.get(src, 0.0), b)
     for t in bundle.tls:
-        if t.ja3:
-            p.ja3_seen.add(t.ja3)
         if t.ja4:
             p.ja4_seen.add(t.ja4)
     if bundle.flows:

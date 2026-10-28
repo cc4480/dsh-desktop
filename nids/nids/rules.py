@@ -45,7 +45,7 @@ class Condition(BaseModel):
 
     def holds(self, features: dict[str, float]) -> bool:
         # A feature the window cannot provide (e.g. a profile feature with no profile
-        # loaded, or JA3 when the sensor does not compute it) never matches.
+        # loaded, or JA4 when the sensor does not compute it) never matches.
         if self.feature not in features:
             return False
         return OPS[self.op](features[self.feature], self.value)

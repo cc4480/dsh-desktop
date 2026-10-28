@@ -54,7 +54,7 @@ class DnsQuery(BaseModel):
 
 
 class TlsSession(BaseModel):
-    """ssl.log, typed. JA3/JA4 appear only when Zeek runs the ja3/ja4 packages."""
+    """ssl.log, typed. JA4 appears only when Zeek runs the ja4 package (the lab sensor does)."""
 
     ts: float
     uid: str
@@ -65,7 +65,6 @@ class TlsSession(BaseModel):
     server_name: str = ""  # sanitised hostname; never sent to the LLM
     established: bool = False
     validation_status: str = "unknown"  # ok | self_signed | expired | untrusted | other | unknown
-    ja3: str = ""
     ja4: str = ""
 
 

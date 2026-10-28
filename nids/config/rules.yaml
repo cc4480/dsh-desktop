@@ -181,15 +181,15 @@
 
 - id: NEW_TLS_FINGERPRINT
   # Needs a profile and a sensor that computes JA4 (the Docker lab's sensor image installs
-  # zeek/foxio/ja4). JA3 is a fallback only: Chrome randomises extension order, so its
-  # JA3 changes per connection while JA4 does not.
+  # zeek/foxio/ja4). JA3 is deliberately not used: archived upstream, and unstable for
+  # Chrome, which randomises extension order per connection.
   source: tls
   group_by: [src_ip, dst_ip, dst_port]
   window: 900
   correlation_window: 1800
   when:
     - {feature: session_count, op: ">=", value: 5}
-    - {feature: new_ja3_ratio, op: ">", value: 0.99}
+    - {feature: new_fingerprint_ratio, op: ">", value: 0.99}
   confidence: 0.65
   attack_type: "Application Layer Protocol: Unseen TLS Client"
   attack_id: T1071.001

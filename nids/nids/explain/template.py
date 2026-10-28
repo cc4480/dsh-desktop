@@ -23,7 +23,7 @@ _LEADS = {
 _CITE_ORDER = ["rule_match", "packets_per_second", "syn_ratio", "s0_ratio", "failed_conn_ratio",
                "distinct_dst_ports", "distinct_dst_ips", "mean_label_length", "unique_subdomain_ratio",
                "iat_mean", "iat_cv", "handshake_ratio", "mean_duration", "request_count", "not_found_ratio",
-               "distinct_uri_count", "scanner_ua_ratio", "session_count", "self_signed_ratio", "new_ja3_ratio",
+               "distinct_uri_count", "scanner_ua_ratio", "session_count", "self_signed_ratio", "new_fingerprint_ratio",
                "new_dst_ratio", "bytes_out_vs_baseline", "notice_count", "bytes_out", "anomaly_score",
                "supervised_probability", "flow_count"]
 

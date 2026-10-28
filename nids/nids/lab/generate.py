@@ -26,14 +26,13 @@ DOMAINS = ["example.com", "example.org", "cdn.example.net", "api.example.io", "m
 SUBS = ["www", "api", "cdn", "img", "static", "login", "m", "assets"]
 BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 PAGES = ["/", "/index.html", "/login", "/api/status", "/static/app.js", "/static/app.css", "/img/logo.png"]
-# TLS client fingerprints, as the sensor image's ja3 + ja4 packages write them. Browsers
-# get a stable JA4 but a fresh JA3 per connection, because Chrome randomises extension
-# order; the implant has one fixed, unfamiliar fingerprint. The first JA4 is taken from
-# the FoxIO package's own test baseline (zeek/testing/Baseline/tests.ja4-tls).
+# TLS client fingerprints (JA4), as the sensor image's ja4 package writes them. Browsers
+# use a few stable JA4s; the implant has one unfamiliar JA4. The first value is taken from
+# the FoxIO package's own test baseline (zeek/testing/Baseline/tests.ja4-tls); the others
+# are format-valid examples.
 COMMON_JA4 = ["t13d1517h2_8daaf6152771_cb7bf5808d99", "t13d1715h2_5b57614c22b0_3d5424432f57",
               "t13d1516h2_8daaf6152771_02713d6af862"]
 IMPLANT_JA4 = "t12d190900_d83cc789557e_7af1ed941c26"
-IMPLANT_JA3 = "72a589da586844d7f0818ce684948eea"
 
 # expect: "detect" -> an incident must exist; "informational" -> an incident must exist and
 # be Informational; "ignore" -> not scored (the poisoned UA is covered by test_injection).
@@ -97,10 +96,10 @@ class Writer:
                           "method": method, "host": "web-prod-01", "uri": uri, "user_agent": ua,
                           "status_code": status, "request_body_len": 0, "response_body_len": 512})
 
-    def tls(self, ts, uid, src, dst, dport, sni, ja3, ja4, validation="ok") -> None:
+    def tls(self, ts, uid, src, dst, dport, sni, ja4, validation="ok") -> None:
         self.ssl.append({"ts": round(ts, 6), "uid": uid, "id.orig_h": src, "id.resp_h": dst, "id.resp_p": dport,
                          "version": "TLSv13", "server_name": sni, "established": True,
-                         "validation_status": validation, "ja3": ja3, "ja4": ja4})
+                         "validation_status": validation, "ja4": ja4})
 
     def write(self, out: Path) -> None:
         out.mkdir(parents=True, exist_ok=True)
@@ -127,7 +126,7 @@ def benign(w: Writer, t0: float, seconds: int, scale: float = 1.0) -> None:
                        service="ssl")
             if port == 443:
                 w.tls(ts + 0.05, u, src, dst, 443, f"{rng.choice(SUBS)}.{rng.choice(DOMAINS)}",
-                      f"{rng.getrandbits(128):032x}", rng.choice(COMMON_JA4))
+                      rng.choice(COMMON_JA4))
         for _ in range(rng.randint(int(4 * scale), int(8 * scale))):  # DNS
             ts = base + rng.random()
             src = rng.choice(CLIENTS)
@@ -194,7 +193,7 @@ def attacks(w: Writer, t0: float) -> None:
         ts = t0 + 5 + i * 60 + rng.uniform(-1, 1)
         u = w.flow(ts, "192.168.1.60", "198.51.100.77", 443, dur=0.3,
                    ob=rng.randint(180, 220), rb=rng.randint(90, 120), op=4, rp=3, service="ssl")
-        w.tls(ts + 0.05, u, "192.168.1.60", "198.51.100.77", 443, "", IMPLANT_JA3, IMPLANT_JA4,
+        w.tls(ts + 0.05, u, "192.168.1.60", "198.51.100.77", 443, "", IMPLANT_JA4,
               "self signed certificate")
     # SSH password guessing against db-prod-01: 40 short, completed sessions in a minute,
     # then Zeek's own SSH::Password_Guessing notice.

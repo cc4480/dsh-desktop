@@ -167,7 +167,6 @@ def read_ssl(path: str | Path | Iterable[dict]) -> list[TlsSession]:
                 server_name=s.hostlike(r.get("server_name"), 64),
                 established=str(r.get("established")).lower() in ("t", "true"),
                 validation_status=_validation(r.get("validation_status")),
-                ja3=re.sub(r"[^0-9a-f]", "", str(r.get("ja3") or "").lower())[:32],
                 ja4=re.sub(r"[^A-Za-z0-9_]", "", str(r.get("ja4") or ""))[:40],
             ))
         except ValueError:

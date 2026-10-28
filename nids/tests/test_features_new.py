@@ -244,7 +244,7 @@ def test_pcap_extraction_keeps_only_the_incident(tmp_path):
     assert len(kept) == (20 if shutil.which("tshark") else 25)  # tcpdump has no time filter
 
 
-# ------------------------------------------------------------------ JA4 / JA3
+# ------------------------------------------------------------------ JA4
 # Real values from the FoxIO package's own test baselines (zeek/testing/Baseline/tests.ja4-tls*).
 REAL_JA4 = ["t13d1517h2_8daaf6152771_cb7bf5808d99", "q13d0310h3_55b375c5d22e_cd85d2d88918"]
 
@@ -253,37 +253,30 @@ def test_reader_keeps_real_ja4_values(tmp_path):
     log = tmp_path / "ssl.log"
     log.write_text("\n".join(json.dumps({
         "ts": 1.0 + i, "uid": f"C{i}", "id.orig_h": "10.0.0.1", "id.resp_h": "10.0.0.2", "id.resp_p": 443,
-        "version": "TLSv13", "established": True, "ja4": j, "ja4s": "t130200_1301_234ea6891581",
-        "ja3": "773906b0efdefa24a7f2b8eb6985bf37"}) for i, j in enumerate(REAL_JA4)) + "\n")
+        "version": "TLSv13", "established": True, "ja4": j, "ja4s": "t130200_1301_234ea6891581"})
+        for i, j in enumerate(REAL_JA4)) + "\n")
     assert [t.ja4 for t in zeek.read_ssl(log)] == REAL_JA4
 
 
-def test_ja4_wins_over_randomised_ja3():
+def test_fingerprint_novelty_uses_ja4_and_says_when_it_cannot_tell():
     from nids.profile import Profile
 
-    p = Profile(ja3_seen={"a" * 32}, ja4_seen={REAL_JA4[0]})
-    # Chrome: same JA4, a different JA3 on every connection -> not new.
-    assert p.is_new_fingerprint("f" * 32, REAL_JA4[0]) is False
-    assert p.is_new_fingerprint("a" * 32, "t12d190900_d83cc789557e_7af1ed941c26") is True
-    assert p.is_new_fingerprint("b" * 32, "") is True  # JA3-only sensor: fallback
-    assert p.is_new_fingerprint("", "") is None
+    p = Profile(ja4_seen={REAL_JA4[0]})
+    assert p.is_new_fingerprint(REAL_JA4[0]) is False
+    assert p.is_new_fingerprint("t12d190900_d83cc789557e_7af1ed941c26") is True
+    assert p.is_new_fingerprint("") is None  # sensor without the JA4 package
     # Baseline captured without JA4 but live traffic has it: cannot say, rather than "all new".
-    assert Profile(ja3_seen={"a" * 32}).is_new_fingerprint("a" * 32, REAL_JA4[0]) is None
+    assert Profile().is_new_fingerprint(REAL_JA4[0]) is None
 
 
 def test_unseen_tls_client_fires_for_the_implant_only(lab, config):
     incidents = pipeline.run(lab / "demo", config())
     fired = {i.src_ip for i in incidents if i.rule_ids == ["NEW_TLS_FINGERPRINT"]}
-    assert fired == {"192.168.1.60"}  # despite every benign browser session having a fresh JA3
+    assert fired == {"192.168.1.60"}
 
 
-def test_a_ja3_only_sensor_would_flag_ordinary_browsing(lab, trained):
-    """Why JA4 is preferred: replay the same traffic with JA3 only."""
-    from nids.profile import Profile
-
-    prof = Profile.load(trained["profile"])
-    benign = [t for t in zeek.read_ssl(lab / "demo" / "ssl.log") if t.src_ip != "192.168.1.60"]
-    ja3_only = Profile(ja3_seen=prof.ja3_seen)
-    new = [ja3_only.is_new_fingerprint(t.ja3, "") for t in benign]
-    assert sum(bool(n) for n in new) / len(new) > 0.99  # randomised JA3: nearly all "new"
-    assert not any(prof.is_new_fingerprint(t.ja3, t.ja4) for t in benign)  # JA4: none
+def test_sensor_image_installs_ja4_and_not_the_archived_ja3():
+    dockerfile = (ROOT / "lab" / "sensor" / "Dockerfile").read_text()
+    installs = [line for line in dockerfile.splitlines() if "zkg install" in line]
+    assert len(installs) == 1 and "zeek/foxio/ja4" in installs[0]
+    assert "@load packages" in dockerfile and "community-id-logging" in dockerfile
