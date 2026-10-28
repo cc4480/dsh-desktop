@@ -122,8 +122,9 @@ def banner() -> None:
     else:
         lat = stats.get("narrative_latency_ms") or {}
         c[6].metric("LLM narratives validated", f"{stats.get('narrative_validation_pass', 0)}/{run['incidents']}",
-                    help=f"Backend {stats.get('backend')}; latency p50 {lat.get('p50')} ms, p99 {lat.get('p99')} ms. "
-                         "Rejected narratives fall back to the template.")
+                    help=f"Backend {stats.get('backend')} ({stats.get('llm_model') or 'default model'}); "
+                         f"latency p50 {lat.get('p50')} ms, p99 {lat.get('p99')} ms. Rejected narratives fall "
+                         "back to the template. Every payload sent off-host is recorded in the egress_log table.")
 
     warnings = []
     if loss is not None and loss > 1:

@@ -284,3 +284,90 @@ def test_sensor_image_installs_ja4_and_not_the_archived_ja3():
     # An exact Zeek release, never the floating tag: the JA4 plugin compiles against it.
     image = next(line for line in dockerfile.splitlines() if line.startswith("ARG ZEEK_IMAGE="))
     assert re.fullmatch(r"ARG ZEEK_IMAGE=zeek/zeek:\d+\.\d+\.\d+", image), image
+
+
+# ------------------------------------------------------------------ DeepSeek backend
+class _Resp:
+    def __init__(self, body):
+        self.body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self.body
+
+
+def _good_json():
+    return json.dumps({"summary": "Password guessing against the database server.", "attack_type": "x",
+                       "severity_level": "critical", "technical_evidence": ["handshake_ratio=1.0"],
+                       "remediation_intent": "block_source_ip"})
+
+
+def test_deepseek_request_shape_redaction_and_egress(monkeypatch, tmp_path):
+    from nids.explain import llm
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    calls = []
+
+    def fake_post(url, headers=None, json=None, timeout=None):
+        calls.append((url, headers, json))
+        return _Resp({"choices": [{"message": {"content": _good_json()}}]})
+
+    monkeypatch.setattr("nids.explain.llm.requests.post", fake_post)
+    store = Store(tmp_path / "e.db")
+    ex = Explainer(ASSETS, backend="deepseek", model="deepseek-test", egress_log=store.log_egress)
+    inc = _incident(dst_ip="192.168.1.20", asset_name="db-prod-01",
+                    evidence={"dst_ip": "192.168.1.20", "asset_name": "db-prod-01", "handshake_ratio": 1.0})
+    res = ex.explain(inc, ["block_source_ip", "no_action"], "block_source_ip")
+    assert res.validation_passed and res.source == "llm"
+    url, headers, body = calls[0]
+    assert url == "https://api.deepseek.com/chat/completions" and headers == {"Authorization": "Bearer sk-test"}
+    assert body["model"] == "deepseek-test" and body["response_format"] == {"type": "json_object"}
+    assert body["temperature"] == 0 and "json" in body["messages"][0]["content"].lower()
+    sent = body["messages"][1]["content"]
+    assert "192.168.1.20" not in sent and "db-prod-01" not in sent and "INTERNAL_HOST_" in sent
+    assert store.db.execute("SELECT backend FROM egress_log").fetchone()[0] == "deepseek"
+
+
+def test_deepseek_retries_once_on_empty_then_falls_back(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    replies = iter(["", _good_json()])
+    monkeypatch.setattr("nids.explain.llm.requests.post",
+                        lambda *a, **k: _Resp({"choices": [{"message": {"content": next(replies)}}]}))
+    ex = Explainer(ASSETS, backend="deepseek", model="m")
+    assert ex.explain(_incident(), ["block_source_ip"], "block_source_ip").validation_passed
+
+    monkeypatch.setattr("nids.explain.llm.requests.post",
+                        lambda *a, **k: _Resp({"choices": [{"message": {"content": ""}}]}))
+    res = Explainer(ASSETS, backend="deepseek", model="m").explain(_incident(), ["block_source_ip"], "block_source_ip")
+    assert res.source == "template" and not res.validation_passed
+
+
+def test_deepseek_configuration_errors_and_default(monkeypatch):
+    from nids.explain import llm
+
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPSEEK_MODEL", raising=False)
+    assert llm.default_backend() == "none"
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
+        Explainer(ASSETS, backend="deepseek", model="m")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    assert llm.default_backend() == "deepseek"
+    with pytest.raises(ValueError, match="no DeepSeek model"):
+        Explainer(ASSETS, backend="deepseek")
+    monkeypatch.setenv("DEEPSEEK_MODEL", "from-env")
+    assert Explainer(ASSETS, backend="deepseek").model == "from-env"
+
+
+def test_llm_check_command(monkeypatch, capsys):
+    from nids import __main__ as cli
+
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+    monkeypatch.setattr("nids.explain.llm.requests.get",
+                        lambda *a, **k: _Resp({"data": [{"id": "model-b"}, {"id": "model-a"}]}))
+    monkeypatch.setattr("nids.explain.llm.requests.post",
+                        lambda *a, **k: _Resp({"choices": [{"message": {"content": _good_json()}}]}))
+    assert cli.main(["llm-check", "--model", "model-a"]) == 0
+    out = capsys.readouterr().out
+    assert "model-a, model-b" in out and "PASS" in out and "redaction: OK" in out

@@ -1,10 +1,15 @@
 """Plane 5: direct LLM client (~no framework, so the trust boundary stays readable).
 
 Backends
-  none    template only (default; the demo floor never depends on a model)
-  ollama  local, e.g. llama3.1:8b. No telemetry leaves the host.
-  openai  any OpenAI-compatible /chat/completions endpoint. Internal IPs and asset names
-          are replaced by stable placeholders before egress, and every egress is logged.
+  deepseek  the project's provider (DEEPSEEK_API_KEY, model from DEEPSEEK_MODEL or --model).
+            DeepSeek offers JSON-object mode but not JSON-schema mode, so the schema goes in
+            the prompt and the validator is the only enforcement.
+  none      template only; the demo floor never depends on a model
+  ollama    local alternative; no telemetry leaves the host
+  openai    any other OpenAI-compatible endpoint
+
+For every cloud backend (deepseek, openai), internal IPs and asset names are replaced by
+stable placeholders before egress, and every payload that leaves is logged.
 """
 from __future__ import annotations
 
@@ -65,6 +70,56 @@ def ollama_chat(model: str, base_url: str = "http://127.0.0.1:11434", timeout: f
     return chat
 
 
+DEEPSEEK_URL = "https://api.deepseek.com"
+CLOUD_BACKENDS = {"deepseek", "openai"}
+BACKENDS = ("deepseek", "none", "ollama", "openai")
+
+
+def default_backend() -> str:
+    """DeepSeek when a key is configured; otherwise the deterministic template."""
+    return "deepseek" if os.environ.get("DEEPSEEK_API_KEY") else "none"
+
+
+def deepseek_chat(model: str, base_url: str = DEEPSEEK_URL, timeout: float = 60, retries: int = 1) -> ChatFn:
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if not key:
+        raise ValueError("DEEPSEEK_API_KEY is not set")
+    if not model:
+        raise ValueError("no DeepSeek model set: pass --model or set DEEPSEEK_MODEL "
+                         "(python -m nids llm-check lists the models your key can use)")
+
+    def chat(system: str, user: str) -> str:
+        for attempt in range(retries + 1):
+            r = requests.post(
+                f"{base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {key}"},
+                json={
+                    "model": model,
+                    "temperature": 0,
+                    # JSON-object mode: valid JSON guaranteed, shape not. The system prompt
+                    # contains the word "json" and the schema, as DeepSeek requires.
+                    "response_format": {"type": "json_object"},
+                    "stream": False,
+                    "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+                },
+                timeout=timeout,
+            )
+            r.raise_for_status()
+            content = (r.json()["choices"][0]["message"].get("content") or "").strip()
+            if content or attempt == retries:
+                return content  # an empty reply after the retry falls back to the template
+        return ""
+
+    return chat
+
+
+def list_models(base_url: str = DEEPSEEK_URL, timeout: float = 20) -> list[str]:
+    key = os.environ.get("DEEPSEEK_API_KEY", "")
+    r = requests.get(f"{base_url}/models", headers={"Authorization": f"Bearer {key}"}, timeout=timeout)
+    r.raise_for_status()
+    return sorted(m["id"] for m in r.json().get("data", []))
+
+
 def openai_chat(model: str, base_url: str = "https://api.openai.com/v1", timeout: float = 60) -> ChatFn:
     key = os.environ.get("OPENAI_API_KEY", "")
 
@@ -123,7 +178,7 @@ class Explainer:
         self,
         assets: AssetRegistry,
         backend: str = "none",
-        model: str = "llama3.1:8b",
+        model: str = "",
         chat: ChatFn | None = None,
         cache_get: Callable[[str], dict | None] | None = None,
         cache_put: Callable[[str, dict], None] | None = None,
@@ -135,8 +190,13 @@ class Explainer:
         self.cache_get = cache_get or (lambda fp: None)
         self.cache_put = cache_put or (lambda fp, n: None)
         self.egress_log = egress_log or (lambda incident_id, backend, payload: None)
+        if backend not in BACKENDS:
+            raise ValueError(f"unknown LLM backend {backend!r}; choose from {BACKENDS}")
         if chat is not None:
             self.chat: ChatFn | None = chat
+        elif backend == "deepseek":
+            self.model = model or os.environ.get("DEEPSEEK_MODEL", "")
+            self.chat = deepseek_chat(self.model, os.environ.get("DEEPSEEK_BASE_URL", DEEPSEEK_URL))
         elif backend == "ollama":
             self.chat = ollama_chat(model, os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434"))
         elif backend == "openai":
@@ -158,10 +218,10 @@ class Explainer:
             if ok and narrative:
                 return ExplainResult(narrative, True, "cache", [], fallback)
 
-        redactor = Redactor(self.assets) if self.backend == "openai" else None
+        redactor = Redactor(self.assets) if self.backend in CLOUD_BACKENDS else None
         sent_evidence = redactor.redact(evidence) if redactor else evidence
         user = P.user_message(sent_evidence, cls, P.context(incident))
-        if self.backend != "ollama":
+        if self.backend in CLOUD_BACKENDS:
             self.egress_log(incident.incident_id, self.backend, user)
 
         t0 = time.perf_counter()

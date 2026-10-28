@@ -5,3 +5,4 @@ models/
 .streamlit/secrets.toml
 config/users.yaml
 *.pcap
+.env

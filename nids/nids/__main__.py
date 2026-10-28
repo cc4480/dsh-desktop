@@ -3,6 +3,7 @@
   python -m nids lab                         generate synthetic baseline + demo Zeek logs
   python -m nids train LOGDIR                anomaly model (IF + autoencoder) + behavioural profile
   python -m nids run LOGDIR [--backend ...]  detect, correlate, explain, render, store (batch)
+  python -m nids llm-check                   list DeepSeek models and test one grounded narrative
   python -m nids watch LOGDIR                the same, live, following Zeek's current logs
   python -m nids evaluate LOGDIR             score each engine and the ensemble against ground truth
   python -m nids pcap INCIDENT --pcap FILE   cut an incident's packets out of a capture
@@ -18,6 +19,8 @@ import sys
 from pathlib import Path
 
 from nids import anomaly, auth, evaluate, forensics, pipeline, rules, study
+from nids.assets import AssetRegistry
+from nids.explain import llm
 from nids.lab import generate
 from nids.models import Incident
 from nids.profile import build as build_profile
@@ -41,6 +44,44 @@ def _print_incidents(incidents: list[Incident]) -> None:
         camp = f"  [{i.campaign_id}]" if i.campaign_id else ""
         print(f"{c}{i.severity.upper():<13}{r} {i.incident_id}  {i.attack_type:<48} "
               f"{i.src_ip} -> {i.dst_ip or '*'}  flows={i.flow_count} conf={i.confidence}{camp}")
+
+
+def llm_check(a: argparse.Namespace) -> int:
+    """Prove the DeepSeek setup end to end before trusting it with incidents."""
+    import os
+
+    if not os.environ.get("DEEPSEEK_API_KEY"):
+        print("DEEPSEEK_API_KEY is not set", file=sys.stderr)
+        return 1
+    try:
+        models = llm.list_models(os.environ.get("DEEPSEEK_BASE_URL", llm.DEEPSEEK_URL))
+        print("models available to this key:", ", ".join(models) or "(none listed)")
+    except Exception as e:  # listing is informative only; the test call below decides
+        print(f"could not list models: {type(e).__name__}: {e}")
+    model = a.model or os.environ.get("DEEPSEEK_MODEL", "")
+    if not model:
+        print("pick one and pass --model (or set DEEPSEEK_MODEL)", file=sys.stderr)
+        return 1
+    sent: list[str] = []
+    ex = llm.Explainer(AssetRegistry.load(a.assets), "deepseek", model,
+                       egress_log=lambda iid, backend, payload: sent.append(payload))
+    probe = Incident(
+        incident_id="INC-llm-check", ts_start=1_800_000_000.0, ts_end=1_800_000_060.0, src_ip="203.0.113.9",
+        dst_ip="192.168.1.20", attack_type="Brute Force", attack_id="T1110", rule_ids=["BRUTE_FORCE"],
+        confidence=0.85, severity="critical", flow_count=40, alert_count=1, asset_name="db-prod-01",
+        asset_criticality=5, direction="inbound",
+        evidence={"src_ip": "203.0.113.9", "dst_ip": "192.168.1.20", "dst_port": 22, "flow_count": 40,
+                  "rule_match": "BRUTE_FORCE", "handshake_ratio": 1.0, "mean_duration": 2.4,
+                  "asset_name": "db-prod-01", "asset_criticality": 5})
+    res = ex.explain(probe, ["block_source_ip", "review_account_activity", "no_action"], "block_source_ip")
+    print(f"\nmodel {model}: {'PASS' if res.validation_passed else 'FAIL'}"
+          f"  ({res.latency_ms} ms)  {'; '.join(res.reasons)}")
+    print("summary:", res.narrative.summary)
+    print("evidence:", res.narrative.technical_evidence, " intent:", res.narrative.remediation_intent)
+    leaked = [s for s in ("192.168.1.20", "db-prod-01") if any(s in p for p in sent)]
+    print("redaction:", "OK, internal address and asset name never left the host" if not leaked
+          else f"LEAKED {leaked}")
+    return 0 if res.validation_passed and not leaked else 1
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -68,8 +109,9 @@ def main(argv: list[str] | None = None) -> int:
     for p in (run, watch):
         p.add_argument("logdir", type=Path)
         p.add_argument("--db", type=Path, default=d.db_path)
-        p.add_argument("--backend", choices=["none", "ollama", "openai"], default="none")
-        p.add_argument("--model", default="llama3.1:8b")
+        p.add_argument("--backend", choices=list(llm.BACKENDS), default=llm.default_backend(),
+                       help="default: deepseek if DEEPSEEK_API_KEY is set, else none (template only)")
+        p.add_argument("--model", default="", help="LLM model id (DeepSeek: or set DEEPSEEK_MODEL)")
         p.add_argument("--no-anomaly", action="store_true")
     run.add_argument("--fresh", action="store_true", help="delete the database first")
     watch.add_argument("--interval", type=float, default=10.0, help="seconds between detection passes")
@@ -96,6 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     au.add_argument("name")
     au.add_argument("--role", choices=list(auth.ROLES), required=True)
     au.add_argument("--users", type=Path, default=auth.USERS_PATH)
+
+    lc = sub.add_parser("llm-check", help="list DeepSeek models and run one validated test narrative")
+    lc.add_argument("--model", default="", help="model to test (default: DEEPSEEK_MODEL)")
+    lc.add_argument("--assets", type=Path, default=d.assets_path)
 
     sr = sub.add_parser("study-report", help="summarise the blinded analyst study")
     sr.add_argument("--db", type=Path, default=d.db_path)
@@ -154,10 +200,16 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         auth.add_user(a.users, a.name, pw, a.role)
         print(f"{a.name} ({a.role}) -> {a.users}")
+    elif a.cmd == "llm-check":
+        return llm_check(a)
     elif a.cmd == "study-report":
         print(study.to_markdown(study.report(Store(a.db).study_responses())))
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except ValueError as e:  # configuration problems (e.g. DeepSeek key or model missing)
+        print(f"error: {e}", file=sys.stderr)
+        sys.exit(1)

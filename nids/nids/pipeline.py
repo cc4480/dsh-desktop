@@ -46,7 +46,7 @@ class Config:
     supervised_path: Path | None = ROOT / "models" / "supervised.joblib"
     db_path: Path = ROOT / "data" / "nids.db"
     backend: str = "none"
-    llm_model: str = "llama3.1:8b"
+    llm_model: str = ""  # DeepSeek: --model or DEEPSEEK_MODEL
 
 
 @dataclass
@@ -242,6 +242,7 @@ def run_stats(bundle: LogBundle, det: Detection, models: Models, cfg: Config, re
         "narrative_validation_pass": responder.passed,
         "narrative_latency_ms": responder.latency_stats(),
         "backend": cfg.backend,
+        "llm_model": responder.explainer.model if cfg.backend != "none" else "",
         "model": model_meta(cfg.model_path) if models.anomaly else {},
         "profile": models.profile.summary() if models.profile else {},
         "supervised": (models.supervised.report.get("zeek_temporal", {}).get("test", {})

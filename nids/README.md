@@ -18,7 +18,7 @@ python -m nids run data/lab/demo --fresh   # detect -> correlate -> explain -> r
 python -m nids evaluate data/lab/demo      # each engine and the ensemble, against ground truth
 python -m nids add-user alice --role approver   # dashboard login (analyst | approver)
 streamlit run dashboard/app.py             # http://127.0.0.1:8501
-python -m pytest -q                        # 62 tests, incl. the prompt-injection suite
+python -m pytest -q                        # 66 tests, incl. the prompt-injection suite
 ```
 
 `NIDS_DASHBOARD_PASSWORD=change-me scripts/demo.sh` runs the whole demo with a shared
@@ -47,31 +47,51 @@ Each pass (default every 10 s):
 `tests/test_watch.py` replays the demo in five-minute chunks and checks the result
 matches the batch run, incident for incident.
 
-### LLM backends
+### LLM: DeepSeek
+
+All AI text generation goes through the **DeepSeek API**: incident narratives, and
+version C of the analyst study. Detection itself (rules, Isolation Forest, autoencoder,
+supervised model) runs locally and makes no API calls.
 
 ```bash
-ollama pull llama3.1:8b
-python -m nids run data/lab/demo --fresh --backend ollama --model llama3.1:8b
+export DEEPSEEK_API_KEY=sk-...              # never commit it; .env is git-ignored
+python -m nids llm-check                    # lists the models your key can use
+export DEEPSEEK_MODEL=<one of those ids>
+python -m nids llm-check                    # one test narrative: PASS/FAIL, latency, redaction check
+python -m nids run data/lab/demo --fresh    # backend defaults to deepseek once the key is set
 ```
 
-The model receives a strict JSON schema (Ollama ≥ 0.5 constrains decoding to it), plus:
+Without a key the backend is `none`, and every incident gets the deterministic template.
+The model id is deliberately not hard-coded: DeepSeek has renamed models (the older
+`deepseek-chat` / `deepseek-reasoner` names were reportedly retired in 2026), and
+`llm-check` shows what your key can actually use. The API couldn't be reached from where
+this was written, so the client is tested against mocked responses in DeepSeek's
+documented OpenAI-compatible format. Run `llm-check` first.
+
+**What the model receives:**
 - a trusted `<CONTEXT>` block: the ATT&CK summary from `config/attack.yaml` and our runbook;
 - the authoritative `<CLASSIFICATION>`;
 - typed `<EVIDENCE>` only.
 
-**Model choice is open.** `llama3.1:8b` (July 2024) is only the default tag. Newer small
-open models exist (the Qwen3 and Gemma families are the usual suggestions for schema-
-constrained JSON). The tie-breaker for this project is the validator's pass rate, so
-run `run --backend ollama --model <tag>` with two or three candidates and keep the one
-with the highest pass rate at acceptable p99 latency. Model availability couldn't be
-checked from here (ollama.com was unreachable).
+DeepSeek offers JSON-object mode (valid JSON) but not JSON-schema mode, so the schema
+is spelled out in the system prompt. **The validator is the only shape enforcement**:
+anything malformed, uncited or out of enum falls back to the template, and the dashboard
+shows the pass rate. An empty reply is retried once.
 
-`--backend openai` works with any OpenAI-compatible endpoint (`OPENAI_API_KEY`,
-`OPENAI_BASE_URL`). If you use OpenAI itself, check its deprecations page first.
-Secondary sources report that `gpt-4o-mini` leaves the API on 2027-01-14; the official
-page couldn't be reached from here. Before anything is sent, internal IPs and asset names become stable
-placeholders, and every payload sent is logged in `egress_log`. Narratives are cached by
+**What leaves the host:** before anything is sent, internal IPs and asset names become
+stable placeholders (`INTERNAL_HOST_A`, `ASSET_B`). Raw packet contents, URIs and
+User-Agents never reach the prompt. What does go to DeepSeek:
+- external IPs, ports and traffic statistics;
+- the classification;
+- our ATT&CK and runbook text.
+
+Every payload sent is stored in `egress_log`, so you can show exactly what left.
+DeepSeek is a China-based cloud provider; if your event or organisation has
+data-residency rules, check them before using real traffic. Narratives are cached by
 fingerprint for 7 days, and round-trip latency is recorded (p50/p99 in the dashboard).
+
+Other backends remain available with `--backend`: `ollama` (fully local) and `openai`
+(any other OpenAI-compatible endpoint).
 
 ### Supervised model (CIC-IDS2017)
 
@@ -215,7 +235,7 @@ should be done first?"), then actionability and confidence are rated 1–5.
 
 Version A keeps the signature name because every real alert has one. So "what happened"
 accuracy should be near the ceiling everywhere. **Time to answer and choosing the right
-action are the measures that tell the versions apart.** Version C needs an LLM backend;
+action are the measures that tell the versions apart.** Version C needs DeepSeek configured;
 without one the study runs A against B.
 
 ## Results on the synthetic demo capture
@@ -297,7 +317,7 @@ Docker lab (M0) and CIC-IDS2017 (M2).
 | M0 Lab & ground truth | **Built, not yet run.** Docker lab with all scenarios, a header-only recorder, and ground truth written by the attack scripts. The synthetic generator is the offline fallback and what the tests use. |
 | M1 Baseline detector | **Done.** |
 | M2 Honest ML | **Built, not run on the real dataset.** Leakage-aware trainer, Zeek→CIC adapter, and the supervised engine in the pipeline and evaluator. Tested end to end on a synthetic CIC-shaped frame. Needs the CIC-IDS2017 CSVs. |
-| M3 LLM tier | **Done; needs a real model run.** Schema-constrained Ollama/OpenAI clients, trusted context, validator, fallback, cache expiry, latency, redaction. Tested with scripted fake models only. |
+| M3 LLM tier | **Done; needs a real DeepSeek run.** DeepSeek client (JSON-object mode, schema in prompt), `llm-check`, trusted context, validator, fallback, cache expiry, latency, redaction, egress log. Tested with mocked API responses only. |
 | M4 Dashboard & response | **Done.** Live mode, campaigns, incident lifecycle, roles, forensics, nftables, sensor health. |
 | M5 Evaluation | **Built, needs people.** Evaluation harness, baselines table, adversarial suite, and the blinded timed study are done. The study needs ≥ 8 analysts and an LLM backend. |
 
@@ -308,8 +328,8 @@ Docker lab (M0) and CIC-IDS2017 (M2).
    and re-run on a fresh capture.
 2. **M2:** `python ml/train_supervised.py --data <CIC-IDS2017 dir>`, then re-run
    `evaluate` so the supervised row and the naive-vs-honest gap are real.
-3. **M3:** `--backend ollama`. Compare two or three current small models on validation
-   pass rate and p99 latency (see "Model choice is open" above).
+3. **M3:** set `DEEPSEEK_API_KEY`, run `python -m nids llm-check`, pick a model, then run the
+   demo and record the validation pass rate and p99 latency from the dashboard.
 4. **M5:** run the study with ≥ 8 analysts, then `python -m nids study-report`.
 5. **JA4:** the sensor image installs the JA4 package, but it has not been built here.
    Zeek isn't available in this environment, and compiling it from source was not
