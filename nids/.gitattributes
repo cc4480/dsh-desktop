@@ -1,0 +1,6 @@
+# Lab scripts and Dockerfiles run inside Linux containers: a Windows checkout must not turn LF into CRLF.
+*.sh      text eol=lf
+Dockerfile text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.ps1     text eol=crlf

@@ -62,11 +62,11 @@ class Profile:
             "built_at": self.built_at,
             "baseline_hours": self.baseline_hours,
             "n_flows": self.n_flows,
-        }, indent=1))
+        }, indent=1), encoding="utf-8")
 
     @staticmethod
     def load(path: str | Path) -> "Profile":
-        raw = json.loads(Path(path).read_text())
+        raw = json.loads(Path(path).read_text(encoding="utf-8"))
         return Profile(
             known_dsts={k: set(v) for k, v in raw["known_dsts"].items()},
             hourly_bytes_out={k: float(v) for k, v in raw["hourly_bytes_out"].items()},

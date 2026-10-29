@@ -107,7 +107,7 @@ class Writer:
                 **self.extra}
         for name, rows in logs.items():
             rows.sort(key=lambda r: r["ts"])
-            with (out / f"{name}.log").open("w") as fh:
+            with (out / f"{name}.log").open("w", encoding="utf-8") as fh:
                 for r in rows:
                     fh.write(json.dumps(r) + "\n")
 
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> None:
     health(w, demo_t0, a.demo_minutes * 60)
     w.write(a.out / "demo")
     (a.out / "demo" / "ground_truth.json").write_text(json.dumps(
-        [{**g, "start": demo_t0 + g["start"], "end": demo_t0 + g["end"]} for g in GROUND_TRUTH], indent=2))
+        [{**g, "start": demo_t0 + g["start"], "end": demo_t0 + g["end"]} for g in GROUND_TRUTH], indent=2), encoding="utf-8")
     print(f"wrote {a.out}/baseline and {a.out}/demo")
 
 

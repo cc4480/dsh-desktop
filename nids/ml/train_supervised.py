@@ -236,7 +236,7 @@ def main(argv: list[str] | None = None) -> None:
     joblib.dump({"model": model, "features": cols}, a.out / "supervised_deployable.joblib")
     # The live pipeline loads this one (nids/supervised.py refuses any other feature set).
     joblib.dump({"model": zeek_model, "features": zeek_cols}, a.out / "supervised.joblib")
-    (a.out / "supervised_report.json").write_text(json.dumps(report, indent=2))
+    (a.out / "supervised_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 
 

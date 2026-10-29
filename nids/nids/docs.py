@@ -161,13 +161,13 @@ def write(out: Path) -> list[Path]:
     written = []
     for name, dot in DIAGRAMS.items():
         p = out / f"{name}.dot"
-        p.write_text(dot)
+        p.write_text(dot, encoding="utf-8")
         written.append(p)
         if shutil.which("dot"):
             svg = out / f"{name}.svg"
             subprocess.run(["dot", "-Tsvg", str(p), "-o", str(svg)], check=True)
             written.append(svg)
     p = out / "attack_coverage.md"
-    p.write_text(attack_markdown(attack_table()))
+    p.write_text(attack_markdown(attack_table()), encoding="utf-8")
     written.append(p)
     return written

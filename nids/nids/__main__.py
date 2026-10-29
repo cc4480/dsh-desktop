@@ -87,6 +87,9 @@ def llm_check(a: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):  # Windows consoles default to a legacy code page
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="nids")
     sub = ap.add_subparsers(dest="cmd", required=True)
     d = pipeline.Config
@@ -190,9 +193,9 @@ def main(argv: list[str] | None = None) -> int:
         report = evaluate.evaluate(a.logdir, a.truth, _config(a))
         a.out.mkdir(parents=True, exist_ok=True)
         stem = a.logdir.resolve().name
-        (a.out / f"{stem}.json").write_text(json.dumps(report, indent=2))
+        (a.out / f"{stem}.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
         md = evaluate.to_markdown(report)
-        (a.out / f"{stem}.md").write_text(md)
+        (a.out / f"{stem}.md").write_text(md, encoding="utf-8")
         print(md)
         print(f"-> {a.out / stem}.json / .md")
     elif a.cmd == "pcap":

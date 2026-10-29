@@ -175,7 +175,7 @@ def model_meta(model_path: Path | None) -> dict:
     if not model_path:
         return {}
     meta = Path(model_path).with_suffix(".json")
-    return json.loads(meta.read_text()) if meta.exists() else {}
+    return json.loads(meta.read_text(encoding="utf-8")) if meta.exists() else {}
 
 
 class Responder:

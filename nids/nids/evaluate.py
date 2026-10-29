@@ -62,7 +62,7 @@ class Episode:
 
 def load_truth(path: str | Path) -> list[Episode]:
     """JSON array, or JSON lines (what the Docker lab's attack scripts append)."""
-    text = Path(path).read_text().strip()
+    text = Path(path).read_text(encoding="utf-8").strip()
     rows = json.loads(text) if text.startswith("[") else [json.loads(line) for line in text.splitlines() if line.strip()]
     return [Episode(**{k: r.get(k) for k in Episode.__dataclass_fields__ if k in r}) for r in rows]
 

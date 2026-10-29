@@ -77,7 +77,7 @@ class SupervisedModel:
         if report_path.exists():
             import json
 
-            report = json.loads(report_path.read_text())
+            report = json.loads(report_path.read_text(encoding="utf-8"))
         return SupervisedModel(bundle["model"], list(bundle["features"]), report)
 
     def predict(self, flows: Sequence[Flow]) -> np.ndarray:

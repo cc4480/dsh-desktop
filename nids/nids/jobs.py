@@ -1,6 +1,6 @@
 """Background jobs the dashboard starts: the demo feed, watch mode, training, evaluation.
 
-Each job is a `python -m nids ...` subprocess in its own session, with its pid and output
+Each job is a `python -m nids ...` subprocess in its own session or process group, with its pid and output
 under data/jobs/, so it survives dashboard reruns and can be stopped from any session.
 Only argument lists built here are run (no shell); the dashboard offers fixed commands.
 """
@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
+
+import psutil
 
 from nids.pipeline import ROOT
 
@@ -24,15 +25,12 @@ def _meta(name: str, jobs_dir: Path) -> Path:
 
 
 def _alive(pid: int) -> bool:
+    """psutil, not os.kill(pid, 0): on Windows any os.kill signal other than Ctrl-C terminates the process."""
     try:
-        os.kill(pid, 0)
-    except (ProcessLookupError, PermissionError):
+        p = psutil.Process(pid)
+        return p.is_running() and p.status() != psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
         return False
-    try:  # a finished child stays a zombie until reaped; reap it so it reads as stopped
-        done, _ = os.waitpid(pid, os.WNOHANG)
-        return done == 0
-    except ChildProcessError:  # not our child: existence is all we can know
-        return True
 
 
 def start(name: str, args: list[str], jobs_dir: Path = JOBS_DIR, env: dict | None = None) -> dict:
@@ -44,10 +42,10 @@ def start(name: str, args: list[str], jobs_dir: Path = JOBS_DIR, env: dict | Non
     out = jobs_dir / f"{name}.log"
     with out.open("w", encoding="utf-8") as fh:
         proc = subprocess.Popen([sys.executable, "-u", "-m", "nids", *args], cwd=ROOT, stdout=fh,
-                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True,
-                                env={**os.environ, **(env or {})})
+                                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, **_detach(),
+                                env={**os.environ, "PYTHONUTF8": "1", **(env or {})})
     meta = {"name": name, "pid": proc.pid, "args": args, "started_at": time.time()}
-    _meta(name, jobs_dir).write_text(json.dumps(meta))
+    _meta(name, jobs_dir).write_text(json.dumps(meta), encoding="utf-8")
     return status(name, jobs_dir)
 
 
@@ -55,23 +53,41 @@ def status(name: str, jobs_dir: Path = JOBS_DIR) -> dict:
     p = _meta(name, jobs_dir)
     if not p.exists():
         return {"name": name, "running": False, "pid": None, "args": [], "started_at": None}
-    meta = json.loads(p.read_text())
+    meta = json.loads(p.read_text(encoding="utf-8"))
     return {**meta, "running": _alive(meta["pid"])}
+
+
+def _detach() -> dict:
+    """Own session (POSIX) or process group (Windows), so the job outlives a dashboard rerun and can be stopped as a tree."""
+    if os.name == "nt":
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+    return {"start_new_session": True}
+
+
+def _tree(pid: int) -> list[psutil.Process]:
+    try:
+        root = psutil.Process(pid)
+        return [*root.children(recursive=True), root]
+    except psutil.NoSuchProcess:
+        return []
 
 
 def stop(name: str, jobs_dir: Path = JOBS_DIR, timeout: float = 5.0) -> bool:
     st = status(name, jobs_dir)
     if not st["running"]:
         return False
-    try:
-        os.killpg(st["pid"], signal.SIGTERM)
-    except ProcessLookupError:
-        return False
-    deadline = time.time() + timeout
-    while time.time() < deadline and _alive(st["pid"]):
-        time.sleep(0.1)
-    if _alive(st["pid"]):
-        os.killpg(st["pid"], signal.SIGKILL)
+    procs = _tree(st["pid"])
+    for p in procs:
+        try:
+            p.terminate()
+        except psutil.NoSuchProcess:
+            pass
+    _, alive = psutil.wait_procs(procs, timeout=timeout)
+    for p in alive:
+        try:
+            p.kill()
+        except psutil.NoSuchProcess:
+            pass
     return True
 
 

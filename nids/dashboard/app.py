@@ -452,7 +452,7 @@ def evaluation_tab() -> None:
         st.info("No evaluation yet. Run `python -m nids evaluate <zeek-log-dir>` on a capture with ground truth.")
         return
     pick = st.selectbox("Report", reports, format_func=lambda p: f"{p.stem}  ({ts(p.stat().st_mtime)})")
-    r = json.loads(pick.read_text())
+    r = json.loads(pick.read_text(encoding="utf-8"))
     c = r["capture"]
     st.caption(f"{c['flows']:,} flows over {c['hours'] * 60:.1f} min · {c['episodes']} ground-truth episodes · "
                f"engines {r.get('engines', {})}")
@@ -612,7 +612,13 @@ def archive_store() -> Path | None:
         return None
     store.close()
     dest = DB.with_name(f"{DB.stem}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}{DB.suffix}")
-    DB.rename(dest)
+    try:
+        DB.rename(dest)
+    except PermissionError:  # Windows: another process (a stale watch job, a second browser tab) holds the file
+        store = Store(DB)
+        st.error("The incident store is in use by another process, so it was not archived. Stop other jobs "
+                 "and close other dashboard tabs, then try again.")
+        st.stop()
     store = Store(DB)
     st.session_state.pop("seen_incidents", None)
     return dest

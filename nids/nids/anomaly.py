@@ -159,7 +159,7 @@ class AnomalyModel:
             "trained_at": self.trained_at,
             "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         }
-        path.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+        path.with_suffix(".json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     @staticmethod
     def load(path: str | Path) -> "AnomalyModel":

@@ -68,7 +68,10 @@ def replay(logdir: Path, out: Path, speed: float = 10.0, align: str = "day", tic
     shift = shift_for(first, align, clock())
     out.mkdir(parents=True, exist_ok=True)
     for name in LOGS:  # a fresh sensor: watch mode sees new inodes and starts from zero
-        (out / f"{name}.log").unlink(missing_ok=True)
+        try:
+            (out / f"{name}.log").unlink(missing_ok=True)
+        except PermissionError:  # Windows: a watcher from an earlier demo still holds it open
+            raise SystemExit(f"cannot reset {out / (name + '.log')}: stop the watch job that is reading it first")
     handles: dict[str, TextIO] = {}
     wall0 = clock()
     log(f"replaying {logdir} ({last - first:.0f}s of traffic) into {out} at {speed:g}x "
@@ -82,7 +85,7 @@ def replay(logdir: Path, out: Path, speed: float = 10.0, align: str = "day", tic
             while nxt is not None and nxt[0] <= horizon:
                 ts, name, rec = nxt
                 if name not in handles:
-                    handles[name] = (out / f"{name}.log").open("a", encoding="utf-8")
+                    handles[name] = (out / f"{name}.log").open("a", encoding="utf-8", newline="\n")
                 handles[name].write(json.dumps(dict(rec, ts=ts + shift)) + "\n")
                 n += 1
                 nxt = next(records, None)

@@ -33,6 +33,29 @@ python -m nids replay data/lab/demo --out data/live --speed 10   # the feed
 python -m nids watch data/live --interval 3                      # the detector
 ```
 
+### Windows
+
+Python 3.11+ from python.org (tick "Add to PATH"), then in PowerShell from `nids\`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1   # venv, dependencies, demo data, models
+.\.venv\Scripts\python.exe -m nids add-user alice --role approver
+.\.venv\Scripts\python.exe -m streamlit run dashboard\app.py        # http://127.0.0.1:8501 -> System -> Start live demo
+```
+
+- `scripts\demo.ps1` is `demo.sh` for PowerShell (`$env:NIDS_DASHBOARD_PASSWORD = "..."` for a shared password).
+- Everything in the Python package, the dashboard and the live demo is cross-platform:
+  background jobs use process groups and `psutil`, and all files are read and written as UTF-8.
+- **Zeek does not run natively on Windows.** For real traffic use the Docker lab
+  (`lab\run_lab.ps1 baseline`, then `attack`) with Docker Desktop in Linux-container
+  (WSL 2) mode, or run Zeek on a Linux sensor and point `watch` at a shared log folder.
+  The lab files are kept LF by `.gitattributes`; if you cloned before it existed, re-clone
+  or run `git add --renormalize .`, because CRLF line endings break shell scripts inside the containers.
+- The firewall commands the policy engine prints (iptables/nftables) are for the Linux hosts you protect;
+  the dashboard only displays them.
+- Not verified on Windows by the author, who had Linux only. If something fails, the job output on the System tab
+  and `data\jobs\*.log` say why.
+
 `NIDS_DASHBOARD_PASSWORD=change-me scripts/demo.sh` runs the whole demo with a shared
 password. Without `add-user` there is no per-person accountability, and the dashboard
 says so on screen.
