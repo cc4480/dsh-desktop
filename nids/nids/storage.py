@@ -6,6 +6,7 @@ every command render and view is written to an audit table.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import sqlite3
 import time
@@ -114,23 +115,26 @@ class Store:
         Path(path).parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(str(path), check_same_thread=False)
         self.db.row_factory = sqlite3.Row
+        # Watch mode writes while the dashboard reads and approves: WAL lets them overlap, and a
+        # busy timeout makes a brief writer collision wait instead of raising "database is locked".
+        self.db.execute("PRAGMA journal_mode=WAL")
+        self.db.execute("PRAGMA busy_timeout=10000")
+        self.db.execute("PRAGMA synchronous=NORMAL")
         self.db.executescript(SCHEMA)
         self._migrate()
 
     def close(self) -> None:
         self.db.close()
 
-    def __enter__(self) -> "Store":
+    def __enter__(self) -> Store:
         return self
 
     def __exit__(self, *exc) -> None:
         self.close()
 
     def __del__(self) -> None:  # last resort for callers that never close explicitly
-        try:
+        with contextlib.suppress(Exception):
             self.db.close()
-        except Exception:
-            pass
 
     def _migrate(self) -> None:
         """Additive column migrations, so an existing database keeps working."""
@@ -189,7 +193,7 @@ class Store:
     def study_responses(self, analyst: str | None = None) -> list[dict]:
         q, args = "SELECT * FROM study_responses", ()
         if analyst:
-            q, args = q + " WHERE analyst=?", (analyst,)
+            q, args = q + " WHERE analyst=?", (analyst,)  # type: ignore[assignment]
         return [dict(r) for r in self.db.execute(q + " ORDER BY id", args).fetchall()]
 
     def save_command(self, incident_id: str, intent: str, command: str | None, rollback: str | None,

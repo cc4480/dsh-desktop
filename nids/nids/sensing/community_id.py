@@ -23,4 +23,5 @@ def community_id(src: str, sport: int, dst: str, dport: int, proto: str, seed: i
     if (a, sport) > (b, dport):
         a, b, sport, dport = b, a, dport, sport
     blob = struct.pack("!H", seed) + a + b + struct.pack("!BB", p, 0) + struct.pack("!HH", sport, dport)
-    return "1:" + base64.b64encode(hashlib.sha1(blob).digest()).decode()
+    digest = hashlib.sha1(blob, usedforsecurity=False).digest()  # SHA-1 is fixed by the Community ID spec
+    return "1:" + base64.b64encode(digest).decode()

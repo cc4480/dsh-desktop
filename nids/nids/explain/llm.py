@@ -80,6 +80,34 @@ def default_backend() -> str:
     return "deepseek" if os.environ.get("DEEPSEEK_API_KEY") else "none"
 
 
+BREAKER_FAILURES = 3
+BREAKER_PAUSE_S = 60.0
+RETRYABLE_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _post_with_backoff(url: str, headers: dict, body: dict, timeout: float, attempts: int = 3,
+                       sleep: Callable[[float], None] = time.sleep) -> requests.Response:
+    """POST, retrying transient failures (timeouts, connection errors, 429/5xx) with exponential backoff.
+
+    A 4xx other than those (bad key, bad model, malformed request) raises at once: retrying cannot help.
+    Honours Retry-After, capped at 30 s so a watch pass never stalls for long.
+    """
+    for attempt in range(attempts):
+        try:
+            r = requests.post(url, headers=headers, json=body, timeout=timeout)
+            if r.status_code not in RETRYABLE_STATUS or attempt == attempts - 1:
+                r.raise_for_status()
+                return r
+            retry_after = r.headers.get("Retry-After", "")
+            wait = float(retry_after) if retry_after.isdigit() else 0
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt == attempts - 1:
+                raise
+            wait = 0
+        sleep(min(30.0, wait or 2.0 ** attempt))
+    raise AssertionError("unreachable")
+
+
 def deepseek_chat(model: str, base_url: str = DEEPSEEK_URL, timeout: float = 60, retries: int = 1) -> ChatFn:
     key = os.environ.get("DEEPSEEK_API_KEY", "")
     if not key:
@@ -90,10 +118,10 @@ def deepseek_chat(model: str, base_url: str = DEEPSEEK_URL, timeout: float = 60,
 
     def chat(system: str, user: str) -> str:
         for attempt in range(retries + 1):
-            r = requests.post(
+            r = _post_with_backoff(
                 f"{base_url}/chat/completions",
-                headers={"Authorization": f"Bearer {key}"},
-                json={
+                {"Authorization": f"Bearer {key}"},
+                {
                     "model": model,
                     "temperature": 0,
                     # JSON-object mode: valid JSON guaranteed, shape not. The system prompt
@@ -102,9 +130,8 @@ def deepseek_chat(model: str, base_url: str = DEEPSEEK_URL, timeout: float = 60,
                     "stream": False,
                     "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
                 },
-                timeout=timeout,
+                timeout,
             )
-            r.raise_for_status()
             content = (r.json()["choices"][0]["message"].get("content") or "").strip()
             if content or attempt == retries:
                 return content  # an empty reply after the retry falls back to the template
@@ -190,6 +217,8 @@ class Explainer:
         self.cache_get = cache_get or (lambda fp: None)
         self.cache_put = cache_put or (lambda fp, n: None)
         self.egress_log = egress_log or (lambda incident_id, backend, payload: None)
+        self.failures = 0  # consecutive transport failures; at BREAKER_FAILURES the LLM is skipped for a while
+        self.paused_until = 0.0
         if backend not in BACKENDS:
             raise ValueError(f"unknown LLM backend {backend!r}; choose from {BACKENDS}")
         if chat is not None:
@@ -218,6 +247,8 @@ class Explainer:
             if ok and narrative:
                 return ExplainResult(narrative, True, "cache", [], fallback)
 
+        if time.monotonic() < self.paused_until:  # the service is failing: do not stall every incident on it
+            return ExplainResult(fallback, False, "template", ["llm paused after repeated failures"], fallback)
         redactor = Redactor(self.assets) if self.backend in CLOUD_BACKENDS else None
         sent_evidence = redactor.redact(evidence) if redactor else evidence
         user = P.user_message(sent_evidence, cls, P.context(incident))
@@ -228,6 +259,7 @@ class Explainer:
         latency = None
         try:
             raw_text = self.chat(P.SYSTEM_PROMPT, user)
+            self.failures = 0
             latency = round((time.perf_counter() - t0) * 1000, 1)
             if redactor:
                 raw_text = redactor.restore(raw_text)
@@ -235,6 +267,11 @@ class Explainer:
             if not isinstance(raw, dict):
                 raise ValueError("model did not return a JSON object")
         except (requests.RequestException, ValueError, KeyError) as exc:
+            if isinstance(exc, requests.RequestException):
+                self.failures += 1
+                if self.failures >= BREAKER_FAILURES:
+                    self.paused_until = time.monotonic() + BREAKER_PAUSE_S
+                    self.failures = 0
             return ExplainResult(fallback, False, "template", [f"llm error: {type(exc).__name__}"], fallback, latency)
 
         ok, narrative, reasons = validate(raw, incident, evidence, allowed_intents, default_intent)

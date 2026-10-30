@@ -17,7 +17,10 @@ behaves exactly like live traffic.
 """
 from __future__ import annotations
 
+import logging
 import os
+import signal
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -31,6 +34,7 @@ from nids.sensing import zeek
 from nids.sensing.zeek import LineParser, LogBundle
 from nids.storage import Store
 
+log = logging.getLogger("nids.watch")
 LOGS = ("conn", "dns", "http", "ssl", "notice", "weird")
 DEFAULT_CORRELATION_WINDOW = 300.0
 
@@ -66,7 +70,7 @@ class Tail:
 
 class Watcher:
     def __init__(self, logdir: Path, cfg: Config, retention: float = 3600.0,
-                 log: Callable[[str], None] = print):
+                 log: Callable[[str], None] = log.info):
         self.logdir = Path(logdir)
         self.cfg = cfg
         self.retention = retention
@@ -182,16 +186,43 @@ class Watcher:
         return {"new_flows": n_new, "new": new, "updated": updated, "closed": closed, "reopened": reopened}
 
 
-def watch(logdir: Path, cfg: Config, interval: float = 10.0, retention: float = 3600.0, once: bool = False) -> None:
+MAX_CONSECUTIVE_FAILURES = 20
+
+
+def watch(logdir: Path, cfg: Config, interval: float = 10.0, retention: float = 3600.0, once: bool = False,
+          stop: threading.Event | None = None) -> None:
+    """Run passes until stopped. A failing pass is logged and retried; a persistent failure exits non-zero.
+
+    SIGTERM and SIGINT finish the current pass and then close the store, so a service manager or the
+    dashboard can stop it without leaving a half-written pass.
+    """
+    stop = stop or threading.Event()
+    if threading.current_thread() is threading.main_thread():
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            signal.signal(sig, lambda *_: stop.set())
     w = Watcher(logdir, cfg, retention)
-    print(f"watching {logdir} every {interval:.0f}s (retention {retention:.0f}s, pid {os.getpid()}); "
-          f"engines {w.models.status()}")
-    while True:
-        t0 = time.perf_counter()
-        r = w.step()
-        if r["new_flows"] or r["new"] or r["closed"]:
-            print(f"pass {w.passes}: +{r['new_flows']} flows, {r['new']} new, {r['updated']} updated, "
-                  f"{r['closed']} closed ({(time.perf_counter() - t0) * 1000:.0f} ms)")
-        if once:
-            return
-        time.sleep(max(0.0, interval - (time.perf_counter() - t0)))
+    log.info("watching %s every %.0fs (retention %.0fs, pid %d); engines %s", logdir, interval, retention,
+             os.getpid(), w.models.status())
+    failures = 0
+    try:
+        while not stop.is_set():
+            t0 = time.perf_counter()
+            try:
+                r = w.step()
+                failures = 0
+            except Exception:  # one bad pass must not end live detection
+                failures += 1
+                log.exception("pass %d failed (%d in a row)", w.passes, failures)
+                if failures >= MAX_CONSECUTIVE_FAILURES:
+                    raise SystemExit(f"giving up after {failures} consecutive failed passes") from None
+                r = None
+            if r and (r["new_flows"] or r["new"] or r["closed"]):
+                log.info("pass %d: +%d flows, %d new, %d updated, %d closed (%.0f ms)", w.passes, r["new_flows"],
+                         r["new"], r["updated"], r["closed"], (time.perf_counter() - t0) * 1000)
+            if once:
+                return
+            # Back off while failing, but stay responsive to a stop request.
+            stop.wait(max(0.0, interval * min(failures + 1, 6) - (time.perf_counter() - t0)))
+    finally:
+        w.store.close()
+        log.info("stopped after %d passes", w.passes)

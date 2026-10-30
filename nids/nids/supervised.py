@@ -27,6 +27,7 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from nids import integrity
 from nids.models import Alert, Flow
 
 ZEEK_CIC_FEATURES = [
@@ -65,8 +66,8 @@ class SupervisedModel:
     report: dict
 
     @staticmethod
-    def load(path: str | Path) -> "SupervisedModel":
-        # Model files are control-plane artefacts: only load ones you built yourself.
+    def load(path: str | Path) -> SupervisedModel:
+        integrity.verify(path)  # a pickle runs code on load: only a model we signed at training time
         bundle = joblib.load(path)
         missing = [c for c in bundle["features"] if c not in ZEEK_CIC_FEATURES]
         if missing:

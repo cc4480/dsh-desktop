@@ -83,7 +83,9 @@ def _percentile(xs: list[float], q: float) -> float | None:
 
 def incident_level(incidents: Sequence[Incident], truth: Sequence[Episode], hours: float) -> dict:
     scored = [e for e in truth if e.expect != "ignore"]
-    episodes, latencies, matched_ids = [], [], set()
+    episodes: list[dict] = []
+    latencies: list[float] = []
+    matched_ids: set[str] = set()
     for e in scored:
         hits = [i for i in incidents if e.matches(i)]
         matched_ids.update(i.incident_id for i in hits)

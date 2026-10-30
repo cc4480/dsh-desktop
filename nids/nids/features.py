@@ -10,6 +10,7 @@ deployable model.
 """
 from __future__ import annotations
 
+import itertools
 import math
 import statistics
 from collections import Counter, defaultdict
@@ -134,7 +135,7 @@ def conn_window_features(flows: Sequence[Flow]) -> dict[str, float]:
     ts = sorted(f.ts for f in flows)
     span = ts[-1] - ts[0] if n > 1 else 0.0
     pkts = sum(f.orig_pkts for f in flows)
-    iats = [b - a for a, b in zip(ts, ts[1:])]
+    iats = [b - a for a, b in itertools.pairwise(ts)]
     iat_mean = statistics.fmean(iats) if iats else 0.0
     iat_cv = (statistics.pstdev(iats) / iat_mean) if len(iats) > 1 and iat_mean > 0 else 0.0
     return {

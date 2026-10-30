@@ -45,6 +45,7 @@ from sklearn.ensemble import IsolationForest
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.neural_network import MLPRegressor
 
+from nids import integrity
 from nids.features import FEATURE_REGISTRY_VERSION, FLOW_FEATURES, flow_matrix
 from nids.models import Alert, Flow
 
@@ -146,6 +147,7 @@ class AnomalyModel:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(self, path)
+        integrity.sign(path)
         meta = {
             "detectors": ["isolation_forest", "autoencoder"],
             "combination": f"both > {ALERT_THRESHOLD} or either > {CRITICAL_THRESHOLD}",
@@ -153,7 +155,7 @@ class AnomalyModel:
             "feature_registry_version": self.feature_registry_version,
             "n_train": self.n_train,
             "n_cleaned": self.n_cleaned,
-            "n_calibration": int(len(self.calibration.if_scores)),
+            "n_calibration": len(self.calibration.if_scores),
             "hours_calibrated": sorted(self.by_hour),
             "threshold": ALERT_THRESHOLD,
             "trained_at": self.trained_at,
@@ -162,8 +164,8 @@ class AnomalyModel:
         path.with_suffix(".json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
 
     @staticmethod
-    def load(path: str | Path) -> "AnomalyModel":
-        # Model files are control-plane artefacts: only load ones you built yourself.
+    def load(path: str | Path) -> AnomalyModel:
+        integrity.verify(path)  # a pickle runs code on load: only a model we signed at training time
         model: AnomalyModel = joblib.load(path)
         if not hasattr(model, "autoencoder") or model.feature_names != FLOW_FEATURES:
             raise ValueError("model was trained by an older version or on a different feature set; retrain it")
@@ -249,7 +251,7 @@ def train(
     model.ref_edges = [_edges(X_cal[:, i]) for i in range(X.shape[1])]
     model.ref_props = [_proportions(X_cal[:, i], e) for i, e in enumerate(model.ref_edges)]
     model.trained_at = time.time()
-    model.n_train = int(len(Xs))
+    model.n_train = len(Xs)
     model.n_cleaned = n_rule_removed + n_vote_removed
     return model
 

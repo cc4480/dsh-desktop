@@ -27,9 +27,7 @@ _TOKEN = re.compile(r"^[A-Za-z0-9._:+\-]{0,64}$")
 def safe_evidence(incident: Incident) -> dict[str, float | int | str | bool]:
     out: dict[str, float | int | str | bool] = {}
     for k, v in incident.evidence.items():
-        if isinstance(v, bool | int | float):
-            out[k] = v
-        elif isinstance(v, str) and _TOKEN.match(v):
+        if isinstance(v, bool | int | float) or (isinstance(v, str) and _TOKEN.match(v)):
             out[k] = v
         # else: drop. A value that is not a plain token has no business in a prompt.
     return out

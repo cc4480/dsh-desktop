@@ -24,6 +24,8 @@ def _ip(v: str | None) -> str | None:
 
 def build(incident: Incident, flows: Sequence[Flow], uids: set[str], sample: int = 10) -> dict:
     src, dst = _ip(incident.src_ip), _ip(incident.dst_ip)
+    if src is None:
+        raise ValueError("incident has no source address")
     port = incident.evidence.get("dst_port")
     bpf = f"host {src}" + (f" and host {dst}" if dst else "") + (f" and port {int(port)}" if port else "")
     fam = "ipv6" if ipaddress.ip_address(src).version == 6 else "ip"

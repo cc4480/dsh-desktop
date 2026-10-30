@@ -14,6 +14,7 @@ import hashlib
 import hmac
 import os
 import re
+import time
 from pathlib import Path
 
 import yaml
@@ -73,3 +74,32 @@ def authenticate(name: str, password: str, path: Path = USERS_PATH) -> str | Non
 def can(role: str | None, action: str) -> bool:
     need = {"approve": "approver", "operate": "approver"}.get(action, "analyst")
     return role is not None and ROLES.get(role, 0) >= ROLES[need]
+
+
+class LoginThrottle:
+    """Process-wide lockout: MAX_FAILURES wrong passwords for a name within WINDOW seconds locks it for WINDOW.
+
+    Keyed by the name typed, not by browser session, so opening new sessions does not reset it.
+    """
+
+    MAX_FAILURES = 5
+    WINDOW = 300.0
+
+    def __init__(self, clock=time.monotonic):
+        self.clock = clock
+        self.failures: dict[str, list[float]] = {}
+
+    def _recent(self, name: str) -> list[float]:
+        now = self.clock()
+        fresh = [t for t in self.failures.get(name.lower(), []) if now - t < self.WINDOW]
+        self.failures[name.lower()] = fresh
+        return fresh
+
+    def locked(self, name: str) -> bool:
+        return len(self._recent(name)) >= self.MAX_FAILURES
+
+    def fail(self, name: str) -> None:
+        self._recent(name).append(self.clock())
+
+    def ok(self, name: str) -> None:
+        self.failures.pop(name.lower(), None)

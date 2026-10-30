@@ -28,19 +28,25 @@ from __future__ import annotations
 import argparse
 import json
 import re
-from pathlib import Path
-
 import sys
+from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
 from sklearn.calibration import CalibratedClassifierCV
 from sklearn.frozen import FrozenEstimator
-from sklearn.metrics import average_precision_score, f1_score, precision_score, recall_score
+from sklearn.metrics import (
+    average_precision_score,
+    f1_score,
+    precision_score,
+    recall_score,
+)
 from sklearn.model_selection import train_test_split
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from nids.supervised import ZEEK_CIC_FEATURES  # noqa: E402
+from nids import integrity
+from nids.supervised import ZEEK_CIC_FEATURES
 
 DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday"]
 SPLIT = {"train": ["monday", "tuesday", "wednesday"], "val": ["thursday"], "test": ["friday"]}
@@ -215,7 +221,7 @@ def main(argv: list[str] | None = None) -> None:
     if info["zeek_features_missing"]:
         print(f"warning: Zeek-compatible features missing: {info['zeek_features_missing']}", file=sys.stderr)
     df, n_dup = dedupe(raw)
-    report = {
+    report: dict[str, Any] = {
         "dataset": info,
         "rows_raw": len(raw),
         "duplicates_dropped": n_dup,
@@ -234,8 +240,10 @@ def main(argv: list[str] | None = None) -> None:
     import joblib
 
     joblib.dump({"model": model, "features": cols}, a.out / "supervised_deployable.joblib")
+    integrity.sign(a.out / "supervised_deployable.joblib")
     # The live pipeline loads this one (nids/supervised.py refuses any other feature set).
     joblib.dump({"model": zeek_model, "features": zeek_cols}, a.out / "supervised.joblib")
+    integrity.sign(a.out / "supervised.joblib")
     (a.out / "supervised_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
     print(json.dumps(report, indent=2))
 

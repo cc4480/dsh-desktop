@@ -57,7 +57,7 @@ class Models:
     errors: dict[str, str] = field(default_factory=dict)
 
     @staticmethod
-    def load(cfg: Config) -> "Models":
+    def load(cfg: Config) -> Models:
         m = Models()
         for name, path, loader in (("anomaly", cfg.model_path, anomaly.AnomalyModel.load),
                                    ("supervised", cfg.supervised_path, supervised.SupervisedModel.load),
@@ -115,7 +115,8 @@ def detect(
         if models.supervised is not None and "supervised" in engines:
             alerts += supervised.detect(models.supervised, bundle.flows)
     t1 = time.perf_counter()
-    known = (lambda src, dst: not models.profile.is_new_dst(src, dst)) if models.profile else None
+    profile = models.profile
+    known = (lambda src, dst: not profile.is_new_dst(src, dst)) if profile else None
     correlator = Correlator(rule_set, assets, recent_sources, known_pair=known)
     incidents = correlator.correlate(alerts)
     t2 = time.perf_counter()
@@ -211,7 +212,7 @@ class Responder:
         if res.latency_ms is not None:
             self.latencies.append(res.latency_ms)
         self.store.save_narrative(inc.incident_id, res.narrative.model_dump(), res.validation_passed, res.source,
-                                  res.reasons, template=res.template.model_dump(), latency_ms=res.latency_ms)
+                                  res.reasons, template=res.template.model_dump() if res.template else None, latency_ms=res.latency_ms)
         rendered = self.policy.render(res.narrative.remediation_intent, inc)
         self.store.save_command(inc.incident_id, rendered.intent, rendered.command, rendered.rollback,
                                 rendered.dry_run, rendered.refused_reason)

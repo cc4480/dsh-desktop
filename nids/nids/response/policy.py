@@ -102,7 +102,7 @@ class PolicyEngine:
             raise ValueError("invalid nftables family/table/chain name")
 
     @classmethod
-    def from_config(cls, path: str | Path | None, assets: AssetRegistry) -> "PolicyEngine":
+    def from_config(cls, path: str | Path | None, assets: AssetRegistry) -> PolicyEngine:
         if not path or not Path(path).exists():
             return cls(assets)
         c = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}

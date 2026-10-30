@@ -19,7 +19,7 @@ python -m nids evaluate data/lab/demo      # each engine and the ensemble, again
 python -m nids add-user alice --role approver   # dashboard login (analyst | approver)
 streamlit run dashboard/app.py             # http://127.0.0.1:8501
 python -m nids docs                        # diagrams + ATT&CK coverage table -> docs/
-python -m pytest -q                        # 75 tests, incl. the prompt-injection suite
+python -m pytest -q                        # 86 tests, incl. the prompt-injection suite
 ```
 
 **Everything live from the UI.** Sign in as an approver, open **System**, pick a capture
@@ -288,6 +288,32 @@ Version A keeps the signature name because every real alert has one. So "what ha
 accuracy should be near the ceiling everywhere. **Time to answer and choosing the right
 action are the measures that tell the versions apart.** Version C needs DeepSeek configured;
 without one the study runs A against B.
+
+## Production deployment
+
+**What is production code and what is a fixture.** Everything under `nids/` that runs in
+`watch` and `run`, plus the dashboard, is production logic: there are no stubbed detectors,
+canned responses or simulated results in those paths. The following are deliberately
+simulation or demo tooling, are labelled as such, and are never used by a deployment:
+`nids/lab/generate.py` (synthetic Zeek logs, also the test fixture), `nids/replay.py` (the
+live-demo feed), `lab/` (Docker lab with real attack tools), and the mocks in `tests/`.
+The `llm-check` probe is a synthetic incident on documentation addresses, used only to
+test the DeepSeek connection. Real-world detection quality is still unmeasured: it needs
+the Docker lab, CIC-IDS2017 and live traffic (see below).
+
+| Concern | What the code does |
+|---|---|
+| Model files are pickles | Loaded only if they match the `.sig` written at training time. Set `NIDS_MODEL_KEY` to make it an HMAC so write access to `models/` is not enough to plant a model. Unsigned or modified files are refused and shown on Model health. |
+| Concurrent writers | SQLite in WAL mode with a 10 s busy timeout: `watch` writes while the dashboard reads and approves. |
+| A pass fails | `watch` logs the traceback, backs off, and carries on; 20 failures in a row exit non-zero so a supervisor restarts it. SIGTERM/SIGINT finish the current pass and close the store. |
+| DeepSeek is slow or down | Retries timeouts, 429 and 5xx with exponential backoff (honours `Retry-After`); other 4xx fail at once. After 3 transport failures the LLM is skipped for 60 s and incidents get the template immediately. |
+| Login guessing | 5 wrong passwords for a name locks it for 5 minutes, across sessions. |
+| Logs | Standard `logging` to stderr; `NIDS_LOG_LEVEL=DEBUG` for more. |
+| Packaging | `Dockerfile` (no demo data baked in, non-root, health check) and `deploy/nids-watch.service` (systemd, hardened). |
+
+Terminate TLS in front of the dashboard (it binds 127.0.0.1 by default), keep
+`DEEPSEEK_API_KEY` in the service environment and never in the repository, and use
+per-user logins (`add-user`) instead of the shared demo password.
 
 ## Results on the synthetic demo capture
 

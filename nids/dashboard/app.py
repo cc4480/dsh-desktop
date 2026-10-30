@@ -56,6 +56,11 @@ def _has_secrets() -> bool:
         return False
 
 
+@st.cache_resource
+def throttle() -> auth.LoginThrottle:
+    return auth.LoginThrottle()
+
+
 def gate() -> tuple[str, str]:
     """Returns (viewer, role). Per-user accounts if config/users.yaml exists."""
     if st.session_state.get("authed"):
@@ -72,11 +77,17 @@ def gate() -> tuple[str, str]:
         if st.form_submit_button("Sign in"):
             viewer = viewer.strip()[:40]
             role = None
+            if throttle().locked(viewer):
+                st.error("Too many failed attempts for this name. Try again in a few minutes.")
+                st.stop()
             if users:
                 role = auth.authenticate(viewer, pw, USERS)
             elif viewer and hmac.compare_digest(pw.encode(), str(shared).encode()):
                 role = "approver"
+            if not role:
+                throttle().fail(viewer)
             if role:
+                throttle().ok(viewer)
                 st.session_state.update(authed=True, viewer=viewer, role=role, shared=not users)
                 st.rerun()
             time.sleep(1)  # slow down guessing

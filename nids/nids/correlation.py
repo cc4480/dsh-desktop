@@ -87,15 +87,16 @@ def link_campaigns(incidents: Sequence[Incident], gap: float = CAMPAIGN_GAP) -> 
         by_src.setdefault(inc.src_ip, []).append(inc)
     for src, items in by_src.items():
         chain: list[Incident] = []
-        for inc in items + [None]:  # type: ignore[list-item]
-            if inc is not None and (not chain or inc.ts_start - max(c.ts_end for c in chain) <= gap):
-                chain.append(inc)
+        nxt: Incident | None
+        for nxt in [*items, None]:
+            if nxt is not None and (not chain or nxt.ts_start - max(c.ts_end for c in chain) <= gap):
+                chain.append(nxt)
                 continue
             if len({c.attack_type for c in chain}) >= 2:
                 cid = "CMP-" + hashlib.sha256(f"{src}|{chain[0].incident_id}".encode()).hexdigest()[:6]
                 for c in chain:
                     c.campaign_id = cid
-            chain = [inc] if inc is not None else []
+            chain = [nxt] if nxt is not None else []
 
 
 def _incident_id(alert: Alert) -> str:

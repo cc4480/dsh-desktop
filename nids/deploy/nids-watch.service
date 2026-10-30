@@ -1,0 +1,24 @@
+# Linux sensor host: continuous detection over Zeek's current logs.
+#   sudo useradd --system --home /opt/nids nids
+#   sudo cp deploy/nids-watch.service /etc/systemd/system/ && sudo systemctl enable --now nids-watch
+# Put DEEPSEEK_API_KEY (and optionally DEEPSEEK_MODEL, NIDS_MODEL_KEY) in /etc/nids/env, mode 0600, owned by root.
+[Unit]
+Description=NIDS detector (Zeek log watcher)
+After=network-online.target
+
+[Service]
+User=nids
+WorkingDirectory=/opt/nids
+EnvironmentFile=-/etc/nids/env
+ExecStart=/opt/nids/.venv/bin/python -m nids watch /opt/zeek/logs/current --db /var/lib/nids/nids.db
+Restart=on-failure
+RestartSec=10
+KillSignal=SIGTERM
+TimeoutStopSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/nids /opt/nids/data
+ReadOnlyPaths=/opt/zeek/logs
+
+[Install]
+WantedBy=multi-user.target

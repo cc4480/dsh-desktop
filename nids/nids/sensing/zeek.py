@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from nids.models import DnsQuery, Flow, HttpRequest, Notice, SensorHealth, TlsSession
 from nids.sensing import sanitize as s
@@ -190,7 +191,7 @@ def read_http(path: str | Path | Iterable[dict]) -> list[HttpRequest]:
                 method=method if method in HTTP_METHODS else "OTHER",
                 status_code=s.safe_int(r.get("status_code")),
                 uri_len=len(uri),
-                uri_hash=hashlib.sha1(uri.encode("utf-8", "replace")).hexdigest()[:12] if uri else "",
+                uri_hash=hashlib.sha1(uri.encode("utf-8", "replace"), usedforsecurity=False).hexdigest()[:12] if uri else "",
                 ua_category=ua_category(r.get("user_agent")),
                 request_body_len=s.safe_int(r.get("request_body_len")),
                 response_body_len=s.safe_int(r.get("response_body_len")),
@@ -254,9 +255,10 @@ class LogBundle:
     notices: list[Notice] = field(default_factory=list)
     health: SensorHealth = field(default_factory=SensorHealth)
 
-    def records(self, source: str) -> list:
-        return {"conn": self.flows, "dns": self.dns, "tls": self.tls, "http": self.http,
-                "notice": [n for n in self.notices if n.kind == "notice" and n.src_ip]}[source]
+    def records(self, source: str) -> list[Any]:
+        by_source: dict[str, list[Any]] = {"conn": self.flows, "dns": self.dns, "tls": self.tls, "http": self.http,
+                "notice": [n for n in self.notices if n.kind == "notice" and n.src_ip]}
+        return by_source[source]
 
 
 def read_dir(logdir: str | Path) -> LogBundle:

@@ -12,8 +12,8 @@ time of day is kept, because the anomaly calibration and the profile are per hou
 from __future__ import annotations
 
 import heapq
-import math
 import json
+import math
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -42,7 +42,8 @@ def merged(logdir: Path) -> Iterator[tuple[float, str, dict]]:
 
 
 def span(logdir: Path) -> tuple[float, float]:
-    first = last = None
+    first: float | None = None
+    last = 0.0
     for ts, _, _ in merged(logdir):
         first = ts if first is None else first
         last = ts
@@ -71,7 +72,7 @@ def replay(logdir: Path, out: Path, speed: float = 10.0, align: str = "day", tic
         try:
             (out / f"{name}.log").unlink(missing_ok=True)
         except PermissionError:  # Windows: a watcher from an earlier demo still holds it open
-            raise SystemExit(f"cannot reset {out / (name + '.log')}: stop the watch job that is reading it first")
+            raise SystemExit(f"cannot reset {out / (name + '.log')}: stop the watch job that is reading it first") from None
     handles: dict[str, TextIO] = {}
     wall0 = clock()
     log(f"replaying {logdir} ({last - first:.0f}s of traffic) into {out} at {speed:g}x "

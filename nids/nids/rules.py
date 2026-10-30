@@ -166,7 +166,7 @@ def first_fire(rule: Rule, recs: Sequence, profile: Profile | None, window_close
     ordered = sorted(recs, key=_visible_at)
     n = len(ordered)
     stride = max(1, n // steps)
-    for end in list(range(stride, n, stride)) + [n]:
+    for end in [*range(stride, n, stride), n]:
         prefix = ordered[:end]
         if all(c.holds(window_features(rule.source, prefix, profile)) for c in rule.when):
             return min(_visible_at(prefix[-1]), window_close)

@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from pydantic import ValidationError
 
-from nids import auth, pipeline, rules, study, supervised
+from nids import auth, integrity, pipeline, rules, study, supervised
 from nids.assets import AssetRegistry
 from nids.explain import prompt as P
 from nids.explain.llm import SCHEMA, Explainer, ollama_chat
@@ -208,6 +208,7 @@ def test_supervised_model_trains_on_zeek_features_and_scores_live_flows(tmp_path
     assert cols == supervised.ZEEK_CIC_FEATURES and report["test"]["pr_auc"] > 0.9
     path = tmp_path / "supervised.joblib"
     joblib.dump({"model": model, "features": cols}, path)
+    integrity.sign(path)
     m = supervised.SupervisedModel.load(path)
     flows = zeek.read_conn(lab / "demo" / "conn.log")
     flood = [f for f in flows if f.src_ip == "192.168.1.105" and f.conn_state == "S0"][:200]
@@ -217,6 +218,7 @@ def test_supervised_model_trains_on_zeek_features_and_scores_live_flows(tmp_path
     assert alerts and all(a.engine == "supervised" for a in alerts)
 
     joblib.dump({"model": model, "features": ["Total Length of Fwd Packets"]}, tmp_path / "bad.joblib")
+    integrity.sign(tmp_path / "bad.joblib")
     with pytest.raises(ValueError, match="cannot produce"):
         supervised.SupervisedModel.load(tmp_path / "bad.joblib")
 
@@ -288,6 +290,9 @@ def test_sensor_image_installs_ja4_and_not_the_archived_ja3():
 
 # ------------------------------------------------------------------ DeepSeek backend
 class _Resp:
+    status_code = 200
+    headers: dict = {}
+
     def __init__(self, body):
         self.body = body
 

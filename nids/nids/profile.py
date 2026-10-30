@@ -65,7 +65,7 @@ class Profile:
         }, indent=1), encoding="utf-8")
 
     @staticmethod
-    def load(path: str | Path) -> "Profile":
+    def load(path: str | Path) -> Profile:
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
         return Profile(
             known_dsts={k: set(v) for k, v in raw["known_dsts"].items()},

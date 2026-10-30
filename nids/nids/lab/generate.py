@@ -16,6 +16,7 @@ import random
 import string
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 CLIENTS = [f"192.168.1.{i}" for i in range(100, 140)]
 EXTERNAL_WEB = [f"93.184.216.{i}" for i in range(1, 20)] + [f"151.101.{i}.140" for i in range(1, 20)]
@@ -36,7 +37,7 @@ IMPLANT_JA4 = "t12d190900_d83cc789557e_7af1ed941c26"
 
 # expect: "detect" -> an incident must exist; "informational" -> an incident must exist and
 # be Informational; "ignore" -> not scored (the poisoned UA is covered by test_injection).
-GROUND_TRUTH = [
+GROUND_TRUTH: list[dict[str, Any]] = [
     {"attack": "SYN_FLOOD", "src": "192.168.1.105", "dst": "192.168.1.10", "start": 120, "end": 124,
      "expect": "detect", "attack_id": "T1498.001"},
     {"attack": "HORIZONTAL_PORT_SCAN", "src": "192.168.1.77", "dst": "192.168.1.20", "start": 200, "end": 230,

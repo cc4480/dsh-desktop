@@ -31,7 +31,7 @@ class AssetRegistry:
     default_criticality: int = 2
 
     @classmethod
-    def load(cls, path: str | Path) -> "AssetRegistry":
+    def load(cls, path: str | Path) -> AssetRegistry:
         raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
         assets = {}
         for a in raw.get("assets", []):

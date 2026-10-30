@@ -17,6 +17,8 @@ from __future__ import annotations
 import argparse
 import getpass
 import json
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -162,6 +164,8 @@ def main(argv: list[str] | None = None) -> int:
     dc.add_argument("--out", type=Path, default=pipeline.ROOT / "docs")
 
     a = ap.parse_args(argv)
+    logging.basicConfig(level=os.environ.get("NIDS_LOG_LEVEL", "INFO").upper(), stream=sys.stderr,
+                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if a.cmd == "lab":
         generate.main(["--out", str(a.out)])
     elif a.cmd in ("train", "train-anomaly"):
@@ -222,8 +226,8 @@ def main(argv: list[str] | None = None) -> int:
 
         replay.replay(a.logdir, a.out, speed=a.speed, align=a.align)
     elif a.cmd == "docs":
-        for p in docs.write(a.out):
-            print(p)
+        for written in docs.write(a.out):
+            print(written)
     elif a.cmd == "study-report":
         print(study.to_markdown(study.report(Store(a.db).study_responses())))
     return 0

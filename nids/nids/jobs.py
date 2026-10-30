@@ -6,6 +6,7 @@ Only argument lists built here are run (no shell); the dashboard offers fixed co
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import subprocess
@@ -60,7 +61,7 @@ def status(name: str, jobs_dir: Path = JOBS_DIR) -> dict:
 def _detach() -> dict:
     """Own session (POSIX) or process group (Windows), so the job outlives a dashboard rerun and can be stopped as a tree."""
     if os.name == "nt":
-        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW}
+        return {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)}
     return {"start_new_session": True}
 
 
@@ -78,16 +79,12 @@ def stop(name: str, jobs_dir: Path = JOBS_DIR, timeout: float = 5.0) -> bool:
         return False
     procs = _tree(st["pid"])
     for p in procs:
-        try:
+        with contextlib.suppress(psutil.NoSuchProcess):
             p.terminate()
-        except psutil.NoSuchProcess:
-            pass
     _, alive = psutil.wait_procs(procs, timeout=timeout)
     for p in alive:
-        try:
+        with contextlib.suppress(psutil.NoSuchProcess):
             p.kill()
-        except psutil.NoSuchProcess:
-            pass
     return True
 
 
